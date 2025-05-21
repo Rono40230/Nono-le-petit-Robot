@@ -1,0 +1,2636 @@
+//@version=6
+strategy("Nono le petit robot", overlay=true, default_qty_type=strategy.fixed, currency="USD", max_bars_back=5000)
+
+// Types définis
+type fairValueGap
+    float top
+    float bottom
+    int bias
+    int creationBarIndex
+    int creationTime
+    int lastBarIndex
+    string imbalanceType
+    bool initiallyVisible
+    int age
+    float weight
+    bool isVisible
+
+type FVGWithBox
+    fairValueGap fvg
+    box box
+    label label
+
+type orderBlock
+    float top
+    float bottom
+    int bias
+    box box
+    int barIndex
+
+type IndicatorProps
+    string name
+    color labelColor
+    color textColor
+    string baseText
+
+type Trade
+    string id
+    float entry_price
+    float sl
+    float tp1           // TP at 1:1
+    float tp2           // TP at 1:2
+    float tp3           // TP at 1:3
+    float lot_size      // Total lot size for the trade
+    float remaining_lot_size  // Remaining lot size after partial closures
+    bool is_long
+    bool active
+    bool tp1_hit
+    bool tp2_hit
+    bool tp3_hit
+    int start_bar
+    line entry_line
+    line sl_line
+    line tp1_line
+    line tp2_line
+    line tp3_line
+    box sl_box
+    box tp1_box
+    box tp2_box
+    box tp3_box
+    label entry_label
+    label sl_label
+    label tp1_label
+    label tp2_label
+    label tp3_label
+
+// Variables globales
+var int lengthSMA20 = 20
+var int lengthSMA5 = 5
+var int lengthVolatilitySma = 14
+var bool isFirstTrade = true
+var float weightFibonacciBase = 1.8
+var float weightSTMABase = 1.5
+var float weightSqueeze = 1.0
+var float weightSR = 1.8
+var float weightBreakout = 1.2
+var float weightOBV = 1.0
+var float weightCandle = 1.0
+var float weightImbalance = 1.5
+var int atrWeightPeriod = 10
+var int smaSlopePeriod = 14
+var float volatilityLowThreshold = 0.8
+var float volatilityHighThreshold = 1.2
+var float trendStrengthThreshold = 0.5
+float weightFibonacci = weightFibonacciBase
+float weightSTMA = weightSTMABase
+var IndicatorProps[] indicatorPropsArray = array.new<IndicatorProps>(0)
+var float valeur_pips = 0.0
+var bool useMaxDailyLoss = false
+var float maxDailyLossPercent = 3.0
+var float timeframeSeconds = timeframe.in_seconds(timeframe.period)
+timeframeSeconds := math.max(timeframeSeconds, 1)
+var float[] supportLevels = array.new_float(0)
+var float[] resistanceLevels = array.new_float(0)
+var int[] supportBarIndices = array.new_int(0)
+var int[] resistanceBarIndices = array.new_int(0)
+var int[] supportTestCounts = array.new_int(0)
+var int[] resistanceTestCounts = array.new_int(0)
+var line[] supportLines = array.new_line(0)
+var line[] resistanceLines = array.new_line(0)
+var label[] supportLabels = array.new_label(0)
+var label[] resistanceLabels = array.new_label(0)
+var bool squeezeOn = false
+var bool squeezeOff = false
+var table mainTable = na
+var table backtestMetricsTable = na
+var float mom = 0.0
+var bool squeezeOnStart = false
+var bool squeezeOffStart = false
+var orderBlock[] orderBlocks = array.new<orderBlock>(0)
+var bool srLongCondition = true
+var bool srShortCondition = true
+var bool srSectionExecuted = false
+var float closestLevelPrice = na
+var bool isSupport = false
+var bool isConfirmed = false
+var float longTermSMA = na
+var int currentDay = na
+var float dailyPnL = 0.0
+var bool dailyLossLimitReached = false
+var bool dailyProfitLimitReached = false
+var bool lastBullishFVGDetected = false
+var bool lastBearishFVGDetected = false
+var int lastFVGBar = na
+var int lastFVGBias = na
+var string lastImbalanceType = ""
+var bool lastBullishOBDetected = false
+var bool lastBearishOBDetected = false
+var int lastOBBar = na
+var float fibHigh = na
+var float fibLow = na
+var float fibRange = na
+var float trendAverage = na
+var float fibLevel1Price = na
+var float fibLevel2Price = na
+var float fibLevel3Price = na
+var float fibLevel4Price = na
+var float fibLevel5Price = na
+var bool nearFibLevelBullish = false
+var bool nearFibLevelBearish = false
+var float trendScore = 0.0
+var float obvNormalized = na
+var float obvMANormalized = na
+var float stmaHMA = na
+var float stmaUp = na
+var float stmaDn = na
+var int stmaTrend = 1
+var float stmaUpPlot = na
+var float stmaDnPlot = na
+var float stmaMPlot = na
+var float fibClosestLevel = na
+var string fibClosestLevelStr = ""
+var float fibClosestLevelValue = na
+var bool fibIsUp = false
+var string candlePattern = ""
+var bool candleIsUp = false
+var int lastSignalBar = na
+var int lastSignalDirection = 0
+var int lastBreakoutBar = na
+var int lastBreakoutDirection = 0
+var int lastRebondBar = na
+var int lastRebondDirection = 0
+var int backtestTradeCount = 0
+var float backtestTotalTradeDuration = 0.0
+var float backtestAverageTradeDuration = 0.0
+var int winningTrades = 0
+var int losingTrades = 0
+var int tradesBreakEven = 0
+var float upperBB = na
+var float basis = na
+var float lowerBB = na
+var float upperKC = na
+var float ma = na
+var float lowerKC = na
+var bool breakoutResistanceCross = false
+var bool breakoutSupportCross = false
+var bool isNewBar = false
+var float fvgLiquidityVolumeThreshold = 1.1
+var float fvgLiquidityMinMove = 0.05
+var FVGWithBox[] allFVGs = array.new<FVGWithBox>(0)
+var bool lastShowFVG = true
+var float lastFibHigh = na
+var float lastFibLow = na
+var line fibLine1Stored = na
+var label fibLabel1Stored = na
+var line fibLine2Stored = na
+var label fibLabel2Stored = na
+var line fibLine3Stored = na
+var label fibLabel3Stored = na
+var line fibLine4Stored = na
+var label fibLabel4Stored = na
+var line fibLine5Stored = na
+var label fibLabel5Stored = na
+var box fibBoxBetween50and618Stored = na
+var box fibBoxBetween618and786Stored = na
+var int lastTrendDirection = 1
+var bool fibLongCondition = true
+var bool fibShortCondition = true
+var label[] candlePatternLabels = array.new_label(0)
+var bool canTrade = false
+var bool mtfTrendUp = true
+var bool mtfTrendDown = true
+var float mtfSMA = na
+var float mtfClose = na
+var Trade[] tradesArray = array.new<Trade>(0)
+var Trade[] closedTradesArray = array.new<Trade>(0)
+var bool in_trade = false
+var float cachedRange = na
+var float cachedAvgRange = na
+var float cachedFvgAvgRange = na
+var float cachedVolatilitySma = na
+var float cachedBBWidthSma = na
+var float cachedAvgVolume = na
+var float cachedAtr = na
+float rangeSize = cachedRange
+float avgRange = cachedAvgRange
+float fvgAvgRange = cachedFvgAvgRange
+float volatilitySma14 = cachedVolatilitySma
+float bbWidthSmaPrecomputed = cachedBBWidthSma
+float avgVolume = cachedAvgVolume
+
+// Mode backtesting
+bktGroup = "📈 Mode Backtesting 📉"
+enableBacktest = input.bool(false, "Activer le mode backtesting", group=bktGroup, tooltip="Active le mode backtesting pour tester la stratégie sur des données historiques.")
+
+// Paramètres généraux
+genGroup = "📌 Paramètres généraux 📌"
+trade24h = input.bool(true, "Trader 24h/24", group=genGroup, tooltip="Si activé, permet le trading sans restriction horaire. Si désactivé, le trading est limité par les heures de début et de fin.")
+start_hour = input.int(0, title="Heure de début (0-23)", minval=0, maxval=23, group=genGroup, tooltip="Heure de début du trading.")
+end_hour = input.int(23, title="Heure de fin (0-23)", minval=0, maxval=23, group=genGroup, tooltip="Heure de fin du trading.")
+start_minute = input.int(0, title="Minute de début (0-59)", minval=0, maxval=59, group=genGroup, tooltip="Minute de début du trading.")
+end_minute = input.int(59, title="Minute de fin (0-59)", minval=0, maxval=59, group=genGroup, tooltip="Minute de fin du trading.")
+pair = input.string("BTCUSD", title="Choisir une paire pour le calcul du lot", options=["BTCUSD", "XAUUSD", "USDCAD", "USDJPY", "GBPUSD", "EURUSD", "CHFJPY", "GBPJPY", "EURJPY", "EURGBP", "NZDJPY", "AUDUSD"], group=genGroup, tooltip="Sélectionne la paire de trading.")
+trade_fees = 0.1
+trade_pips = input.float(5, "Nombre de pips engagés par trade", minval=5, maxval=450, step=5, group=genGroup, tooltip="Nombre de pips pour le Stop Loss et le Take Profit.\nConseil : BTC=400 pips. XAUUSD=35 pips. CHFJPY=30 pips. GBPJPY, EURJPY, USDJPY=20 pips. GBPUSD, USDCAD, AUSUSD, NZDJPY, EURGBP=15 pips.")
+numtrade = input.int(1, "Nombre de trades simultanés", minval=1, maxval=3, step=1, group=genGroup, tooltip="Choisissez le nombre de trades à ouvrir simultanément (1 à 3). Chaque trade aura le même SL et des TP ajustés.")
+
+// Gestion du risque
+riskGroup = "💰 Gestion du risque 💰"
+inputCapital = input.float(1000, "Capital initial ($)", minval=100, group=riskGroup, tooltip="Capital initial en $.")
+var float cumulativePnL = 0.0
+risque_par_trade = input.float(1, title="Risque engagé par trade (%)", minval=0.1, maxval=10, step=0.5, group=riskGroup, tooltip="Pourcentage du capital risqué par trade, détermine la taille des positions.")
+float riskAmount = risque_par_trade
+useMaxDailyProfit = input.bool(false, "Activer la limite de gains quotidienne", group=riskGroup, tooltip="Active la limite de gains quotidienne. Si atteinte, le trading est suspendu jusqu'au lendemain.")
+maxDailyProfitPercent = input.float(3.0, "Choisir un % maximum de gains par jour", minval=3, maxval=20, step=1, group=riskGroup, tooltip="Gain maximal quotidien en %.")
+useMaxDailyLoss := input.bool(false, "Activer la limite de perte quotidienne", group=riskGroup, tooltip="Active la limite de perte quotidienne. Si atteinte, le trading est suspendu jusqu'au lendemain.")
+maxDailyLossPercent := input.float(3.0, "Choisir un % maximum de perte par jour", minval=1, maxval=10, step=1, group=riskGroup, tooltip="Perte maximale quotidienne en %.")
+
+// Indicateurs
+indGroup = "💹 Indicateurs 💹"
+indicatorTableDisplay = input.string("Afficher", "Affichage du tableau des indicateurs", options=["Afficher", "Ne pas afficher", "Afficher et fermer à l'ouverture d'un trade"], group=indGroup, tooltip="Choisissez si le tableau des indicateurs doit être affiché en permanence, ne jamais être affiché, ou affiché mais fermé lorsqu'un trade est ouvert.")
+minIndicatorsAligned = input.int(2, "Définir le nombre minimum d'indicateur pour trader", minval=1, maxval=5, step=1, group=indGroup, tooltip="Détermine le nombre minimum d'indicateurs à activer pour commencer à voir des trades s'ouvrir.")
+
+// TrendScore
+trsGroup = "-- TrendScore"
+useTrendScore = input.bool(false, "Utiliser TrendScore", group=trsGroup, tooltip="Active ou désactive l'utilisation du TrendScore, utilisé pour évaluer la force de la tendance en agrégeant les signaux de divers indicateurs techniques. Son résultat influence les conditions d'entrée en position. TRENDSCORE N'EST PAS UN INDICATEUR, donc non comptabilisé dans le nombre minimum d'indicateurs pour ouvrir les trades.")
+trendScoreThreshold = input.float(2.5, "Fixer le seuil TrendScore", minval=1.0, maxval=20.0, step=0.5, group=trsGroup, tooltip="Seuil minimum du TrendScore pour valider un signal de trading lorsque TrendScore est activé.")
+volatilityPeriod = 5
+
+// Vérification Multi Time Frame
+mtfGroup = "-- Multi Time-Frame"
+useMTF = input.bool(false, "Activer la vérification MTF", group=mtfGroup, tooltip="Active la vérification multitimeframe pour aligner les signaux avec la tendance d'une timeframe supérieure.MTF N'EST PAS UN INDICATEUR, donc non comptabilisé dans le nombre minimum d'indicateurs pour ouvrir les trades.")
+mtfTimeframe = input.string("60", "Timeframe MTF", options=["15", "30", "60", "240"], group=mtfGroup, tooltip="Choisir la timeframe supérieure pour la vérification MTF : 15 (15m), 30 (30m), 60 (1h), 240 (4h).")
+mtfSMAPeriod = input.int(20, "Période SMA MTF", minval=10, maxval=200, step=10, group=mtfGroup, tooltip="Période de la SMA pour évaluer la tendance sur la timeframe MTF.")
+
+// Simple Moving Average
+smaGroup = "-- Simple Moving Average"
+useLongTermSMA = input.bool(true, "Utiliser SMA Long Terme", group=smaGroup, tooltip="Active ou désactive la SMA à long terme pour évaluer la tendance sur la timeframe actuelle. Désactivé si MTF est activé.")
+useLongTermSMA := useMTF ? true : useLongTermSMA
+showLongTermSMA = input.bool(false, "Afficher SMA Long Terme", group=smaGroup, tooltip="Affiche la SMA à long terme sur le graphique.")
+longTermTrendLength = input.int(10, title="Période de la tendance à long terme (SMA)", minval=10, maxval=200, step=10, group=smaGroup, tooltip="Période de la SMA pour évaluer la tendance à long terme.")
+
+// SuperTrended Moving Averages
+stmaGroup = "-- SuperTrended Moving Average"
+useSTMA = input.bool(true, "Utiliser SuperTrend dans les conditions", group=stmaGroup, tooltip="Utilise SuperTrend pour générer des signaux et contribuer au score de tendance.")
+showSTMA = input.bool(false, "Afficher SuperTrend", group=stmaGroup, tooltip="Affiche les lignes SuperTrend")
+stmaLength = input.int(4, "Période HMA SuperTrend", minval=1, maxval=50, step=1, group=stmaGroup, tooltip="Période pour le calcul de la HMA dans SuperTrend.")
+stmaPeriods = input.int(5, "Période ATR SuperTrend", minval=1, maxval=50, step=1, group=stmaGroup, tooltip="Période pour le calcul de l'ATR dans SuperTrend.")
+stmaMultiplier = input.float(1.0, "Multiplicateur ATR SuperTrend", minval=0.1, maxval=5.0, step=0.1, group=stmaGroup, tooltip="Multiplicateur de l'ATR pour déterminer les bandes SuperTrend.")
+
+// On Balance Volume
+useOBV = input.bool(false, "Utiliser OBV dans les conditions", group="-- On Balance Volume", tooltip="Utilise l'OBV pour confirmer les mouvements par le volume et contribuer au score de tendance.")
+showOBV = input.bool(false, "Afficher OBV", group="-- On Balance Volume", tooltip="Affiche les lignes OBV et OBV MA sur le graphique.")
+volumeThreshold = input.float(1.0, "Fixer un seuil de volume", minval=0.5, maxval=3.0, step=0.1, group="-- On Balance Volume", tooltip="Seuil minimum de volume (multiple du volume moyen) pour valider un trade.")
+obvLength = input.int(3, "Période OBV", minval=3, maxval=9, step=1, group="-- On Balance Volume", tooltip="Période de la moyenne mobile pour l'OBV (calcul de OBV MA).")
+minOBVGap = input.float(0.4, "Écart min OBV (x stdev OBV)", minval=0.4, maxval=1.2, step=0.1, group="-- On Balance Volume", tooltip="Écart minimum entre OBV et sa moyenne mobile (multiple de l'écart-type).")
+
+// Squeeze Momentum Indicator
+useSqueeze = input.bool(false, "Utiliser Squeeze dans les conditions", group="-- Squeeze Momentum Indicator", tooltip="Utilise l'indicateur Squeeze pour détecter les breakouts de volatilité et contribuer au score de tendance.")
+showSqueeze = input.bool(false, "Afficher Squeeze", group="-- Squeeze Momentum Indicator", tooltip="Affiche les bandes Bollinger et Keltner sur le graphique.")
+bbLength = 5
+bbMult = 1.4
+kcLength = 5
+kcMult = 0.9
+volatilityThreshold = input.float(1, title="Fixer le seuil de volatilité", minval=0.1, maxval=3.0, step=0.1, group="-- Squeeze Momentum Indicator", tooltip="Seuil de volatilité (multiple de l'ATR moyen sur 50 périodes).")
+bbWidthThreshold = input.float(0.5, "Seuil de largeur des bandes de Bollinger", minval=0.1, maxval=2.0, step=0.1, group="-- Squeeze Momentum Indicator", tooltip="Seuil (multiple de l’ATR moyen) pour détecter des bandes de Bollinger étroites dans le filtre anti-range.")
+minMomentum = input.float(0.2, "Seuil min Momentum SMI (x avgRange)", minval=0.2, maxval=0.5, step=0.1, group="-- Squeeze Momentum Indicator", tooltip="Seuil minimum pour le momentum dans Squeeze (multiple de la plage moyenne).")
+
+// Motifs de chandeliers japonais
+useCandlePatternsInConditions = input.bool(false, "Utiliser motifs chandeliers dans les conditions", group="-- Motifs de Chandeliers Japonais", tooltip="Utilise les motifs de chandeliers pour générer des signaux et contribuer au score de tendance.")
+showCandlePatterns = input.bool(false, "Afficher motifs chandeliers", group="-- Motifs de Chandeliers Japonais", tooltip="Affiche les étiquettes des motifs de chandeliers (Hammer, Engulfing, etc.) sur le graphique.")
+pinBarBodyMaxPercent = 0.2
+pinBarWickMinPercent = 0.5
+marubozuWickMaxPercent = 0.2
+marubozuBodyMinPercent = 0.95
+maxCandlePatternsDisplay = input.int(10, "Nombre max de motifs chandeliers à afficher", minval=1, maxval=20, step=1, group="-- Motifs de Chandeliers Japonais", tooltip="Nombre maximum de motifs de chandeliers affichés pour éviter l'encombrement.")
+
+// Fair Value Gaps
+useFVG = input.bool(false, "Utiliser FVG dans les conditions", group="-- Fair Value Gaps", tooltip="Utilise les Fair Value Gaps pour identifier des zones d'imbalance, idéales pour des entrées en scalping.")
+showFVG = input.bool(false, "Afficher FVG", group="-- Fair Value Gaps", tooltip="Affiche les zones de Fair Value Gaps (FVG) sous forme de boîtes colorées.")
+maxFVGDisplay = input.int(5, "Nombre de FVG à prendre en compte", minval=5, maxval=20, step=2, group="-- Fair Value Gaps", tooltip="Nombre maximum de FVG à afficher (évite l'encombrement, entre 5 et 20, pas de 2).")
+fvgAutoThreshold = input.bool(false, "Seuil automatique pour la détection", group="-- Fair Value Gaps", tooltip="Active un seuil dynamique pour détecter les FVG (basé sur la variation de prix).")
+fvgMinGapSize = input.float(0.015, "Taille minimale de l'écart (si seuil manuel)", minval=0.015, maxval=0.5, step=0.05, group="-- Fair Value Gaps", tooltip="Taille minimale des écarts FVG (si seuil manuel activé).")
+fvgVolumeThreshold = input.float(0.5, "Seuil de volume pour confirmer un FVG", minval=0.5, maxval=3.0, step=0.1, group="-- Fair Value Gaps", tooltip="Seuil de volume pour valider un FVG (multiple du volume moyen).")
+fvgDetectConsecutive = input.bool(true, "Détecter les imbalances consécutives", group="-- Fair Value Gaps", tooltip="Active la détection des imbalances entre bougies adjacentes.")
+fvgDetectLiquidity = input.bool(true, "Détecter les imbalances de liquidité", group="-- Fair Value Gaps", tooltip="Active la détection des imbalances liées à des balayages de liquidité.")
+
+// Retracements de Fibonacci
+useFibonacci = input.bool(false, "Utiliser Fibonacci dans les conditions", group="-- Fibonacci Retracement", tooltip="Utilise les retracements Fibonacci pour générer des signaux et contribuer au score de tendance.")
+showFibonacci = input.bool(false, "Afficher Fibonacci", group="-- Fibonacci Retracement", tooltip="Affiche les niveaux Fibonacci (lignes et boîtes) sur le graphique.")
+fibTimelapsHours = input.int(3, "Timelaps du retracement (heures)", minval=1, maxval=10, step=1, group="-- Fibonacci Retracement", tooltip="Période (en heures) pour calculer les extrêmes Fibonacci.")
+fibTolerance = input.float(0.1, "Tolérance pour détecter les retracements", minval=0.1, maxval=5.0, step=0.1, group="-- Fibonacci Retracement", tooltip="Tolérance (en % de la plage Fibonacci) pour considérer le prix proche d'un niveau.")
+fibLevel1 = 1
+fibLevel2 = 0.786
+fibLevel3 = 0.618
+fibLevel4 = 0.5
+fibLevel5 = 0
+
+// Support/Résistance
+srGroup = "-- Support/Résistance Simplifié"
+useSR = input.bool(false, "Utiliser les S/R dans les conditions", group=srGroup, tooltip="Utilise les niveaux de support/résistance pour générer des signaux et contribuer au score de tendance.")
+showSR = input.bool(false, "Afficher les S/R", group=srGroup, tooltip="Affiche les niveaux de support/résistance (lignes vertes/rouges) sur le graphique.")
+proximity = input.float(0.1, "Tolérance pour les conditions S/R (%)", minval=0.1, maxval=2, step=0.1, group=srGroup, tooltip="Tolérance (en % du prix) pour considérer le prix proche d'un niveau S/R.")
+minSRTests = 1
+useBreakout = input.bool(false, "Utiliser la détection de breakout", group=srGroup, tooltip="Détecte les cassures de niveaux S/R, confirmées par un volume supérieur à la moyenne.")
+breakoutLookback = input.int(5, "Période de recherche pour breakout", minval=5, maxval=15, step=1, group=srGroup, tooltip="Nombre de barres à examiner pour identifier les niveaux S/R à casser.")
+breakoutVolumeThreshold = input.float(0.5, "Seuil de volume pour breakout", minval=0.5, maxval=1.2, step=0.1, group=srGroup, tooltip="Seuil de volume (multiple du volume moyen) pour valider un breakout.")
+useRetest = input.bool(false, "Activer la confirmation par retest", group=srGroup, tooltip="Exige un retest du niveau S/R après un breakout ou rebond pour valider le signal.")
+retestLookback = input.int(3, "Période de recherche pour retest", minval=3, maxval=6, step=1, group=srGroup, tooltip="Nombre de barres après un breakout ou rebond pour détecter un retest.")
+retestTimeoutBars = input.int(3, "Délai max pour retest (barres)", minval=3, maxval=20, step=1, group=srGroup, tooltip="Nombre maximum de barres pour attendre un retest.")
+retestProximity = input.float(0.05, "Tolérance pour détecter un retest (%)", minval=0.05, maxval=0.5, step=0.05, group=srGroup, tooltip="Tolérance (en % du prix) pour considérer que le prix a retesté un niveau S/R.")
+retestVolumeThreshold = input.float(1.5, "Seuil de volume pour retest", minval=0.5, maxval=3.0, step=0.1, group=srGroup, tooltip="Seuil de volume (multiple du volume moyen) pour valider un retest.")
+
+// Order Blocks
+obGroup = "-- Order Blocks (OB)"
+useOB = input.bool(false, "Utiliser les OB dans les conditions", group=obGroup, tooltip="Identifier les Order Blocks, zones où les institutions accumulent ou distribuent, pour des entrées stratégiques.")
+showOB = input.bool(false, "Afficher les OB", group=obGroup, tooltip="Affiche les boîtes Order Blocks (vert=haussier, rouge=baissier) sur le graphique.")
+maxOBDisplay = input.int(5, "Nombre max d'OB à afficher", minval=1, maxval=20, step=1, group=obGroup, tooltip="Nombre maximum d'Order Blocks affichés pour éviter l'encombrement.")
+obHorizontalSize = input.int(50, "Taille Horizontale des OB (barres)", minval=10, maxval=500, step=5, group=obGroup, tooltip="Longueur horizontale des rectangles Order Blocks (en barres).")
+threshold = input.float(1, title="Multiplicateur de volatilité pour un mouvement fort", minval=1, maxval=2, step=0.1, group=obGroup, tooltip="Ampleur minimale (multiple de la plage moyenne) d'un mouvement fort pour détecter un OB.")
+definitionMove = input.int(2, title="Nombre de bougies pour détecter un mouvement fort", minval=2, maxval=3, step=1, group=obGroup, tooltip="Nombre de bougies consécutives pour identifier un mouvement fort (OB).")
+minBarsBetweenOBs = input.float(3, title="Espacement minimum entre OB (barres)", minval=1, maxval=20, step=1, group=obGroup, tooltip="Nombre minimum de barres entre deux OB pour éviter l'encombrement.")
+
+atr_value = cachedAtr
+
+// Mettre à jour la dernière direction connue basée sur trendScore ou SMA si trendScore désactivé
+if useTrendScore
+    if trendScore > 0
+        lastTrendDirection := 1
+    else if trendScore < 0
+        lastTrendDirection := -1
+else
+    lastTrendDirection := close > longTermSMA ? 1 : close < longTermSMA ? -1 : lastTrendDirection
+
+// FONCTIONS UTILITAIRES
+calculateStopLoss(isLong, price) =>
+    float localStopDistance = trade_pips * valeur_pips
+    float stopLevel = isLong ? price - localStopDistance : price + localStopDistance
+    stopLevel := math.round(stopLevel, 4)
+    localStopDistance := math.round(localStopDistance, 4)
+    [stopLevel, localStopDistance]
+
+// Fonction pour ouvrir des trades (long ou short)
+openTrades(string direction, float entryPrice, float numPips) =>
+    // Calculer le capital à utiliser
+    float displayedCapital = inputCapital + cumulativePnL
+    float capitalToUse = isFirstTrade ? inputCapital : displayedCapital
+    float riskPercent = risque_par_trade / 100
+    float totalRiskAmount = capitalToUse * riskPercent
+    // Calculer la taille de lot
+    float lotSize = totalRiskAmount / (numPips * valeur_pips)
+    lotSize := math.ceil(lotSize * 100) / 100
+    if na(lotSize) or lotSize <= 0
+        lotSize := 0.01
+    // Calculer le SL
+    bool isLong = direction == "long"
+    [slLevel, localStopDistance] = calculateStopLoss(isLong, entryPrice)
+    slLevel := math.round(slLevel, 4)
+    // Vider tradesArray pour une nouvelle série de trades
+    array.clear(tradesArray)
+    // Ouvrir numtrade trades
+    for i = 0 to numtrade - 1
+        string tradeId = direction + str.tostring(i + 1)
+        // Définir les TP selon le numéro du trade (1:1, 1:2, 1:3)
+        float tp1Level = isLong ? entryPrice + (numPips * valeur_pips) : entryPrice - (numPips * valeur_pips)
+        float tp2Level = numtrade >= 2 ? (isLong ? entryPrice + (numPips * 2 * valeur_pips) : entryPrice - (numPips * 2 * valeur_pips)) : na
+        float tp3Level = numtrade == 3 ? (isLong ? entryPrice + (numPips * 3 * valeur_pips) : entryPrice - (numPips * 3 * valeur_pips)) : na
+        tp1Level := math.round(tp1Level, 4)
+        tp2Level := numtrade >= 2 ? math.round(tp2Level, 4) : na
+        tp3Level := numtrade == 3 ? math.round(tp3Level, 4) : na
+        // Créer un nouvel objet Trade
+        Trade newTrade = Trade.new(id=tradeId, entry_price=entryPrice, sl=slLevel, tp1=tp1Level, tp2=tp2Level, tp3=tp3Level, lot_size=lotSize, remaining_lot_size=lotSize, is_long=isLong, active=true, tp1_hit=false, tp2_hit=false, tp3_hit=false, start_bar=bar_index, entry_line=na, sl_line=na, tp1_line=na, tp2_line=na, tp3_line=na, sl_box=na, tp1_box=na, tp2_box=na, tp3_box=na, entry_label=na, sl_label=na, tp1_label=na, tp2_label=na, tp3_label=na)
+        // Ajouter le trade à tradesArray
+        array.push(tradesArray, newTrade)
+        // Exécuter le trade
+        strategy.entry(tradeId, isLong ? strategy.long : strategy.short, qty=lotSize)
+        strategy.exit("SL " + tradeId, tradeId, stop=slLevel, qty=lotSize)
+
+// Fonction pour calculer positionPnL et gérer la clôture des trades
+updatePnL(Trade[] trades, float closePrice, bool isSLHit) =>
+    float positionPnL = 0.0
+    for i = 0 to array.size(trades) - 1
+        Trade trade = array.get(trades, i)
+        if trade.active
+            float qtyToClose = trade.remaining_lot_size
+            float tradePnL = trade.is_long ? (closePrice - trade.entry_price) * qtyToClose : (trade.entry_price - closePrice) * qtyToClose
+            positionPnL := positionPnL + tradePnL
+            trade.remaining_lot_size := 0.0
+            trade.active := false
+            // Supprimer les visuels
+            if not na(trade.entry_line)
+                line.delete(trade.entry_line)
+            if not na(trade.sl_line)
+                line.delete(trade.sl_line)
+            if not na(trade.tp1_line)
+                line.delete(trade.tp1_line)
+            if not na(trade.tp2_line)
+                line.delete(trade.tp2_line)
+            if not na(trade.tp3_line)
+                line.delete(trade.tp3_line)
+            if not na(trade.sl_box)
+                box.delete(trade.sl_box)
+            if not na(trade.tp1_box)
+                box.delete(trade.tp1_box)
+            if not na(trade.tp2_box)
+                box.delete(trade.tp2_box)
+            if not na(trade.tp3_box)
+                box.delete(trade.tp3_box)
+            if not na(trade.entry_label)
+                label.delete(trade.entry_label)
+            if not na(trade.sl_label)
+                label.delete(trade.sl_label)
+            if not na(trade.tp1_label)
+                label.delete(trade.tp1_label)
+            if not na(trade.tp2_label)
+                label.delete(trade.tp2_label)
+            if not na(trade.tp3_label)
+                label.delete(trade.tp3_label)
+            array.push(closedTradesArray, trade)
+            if array.size(closedTradesArray) > 3
+                array.shift(closedTradesArray)
+            array.set(trades, i, trade)
+    positionPnL
+
+// Fonction pour créer ou mettre à jour un visuel (ligne, box, étiquette)
+createVisual(string visualType, float price, string style, color lineColor, string labelText, int startBar, int endBar, box existingBox, line existingLine, label existingLabel) =>
+    line newLine = existingLine
+    box newBox = existingBox
+    label newLabel = existingLabel
+    if visualType == "line" and na(existingLine)
+        newLine := line.new(startBar, price, endBar, price, color=lineColor, style=style == "solid" ? line.style_solid : style == "dashed" ? line.style_dashed : line.style_dotted)
+    else if visualType == "line" and not na(existingLine)
+        line.set_xy2(existingLine, endBar, price)
+    if visualType == "box" and na(existingBox)
+        newBox := box.new(left=startBar, right=endBar, top=price, bottom=price, border_color=lineColor, bgcolor=color.new(lineColor, 70))
+    else if visualType == "box" and not na(existingBox)
+        box.set_right(existingBox, endBar)
+    if visualType == "label" and na(existingLabel)
+        newLabel := label.new(endBar, price, labelText, color=color.new(color.white, 5), textcolor=lineColor, style=label.style_label_left, size=size.small)
+    else if visualType == "label" and not na(existingLabel)
+        label.set_xy(existingLabel, endBar, price)
+    [newLine, newBox, newLabel]
+
+calculateSqueeze() =>
+    local_basis = ta.sma(close, bbLength)
+    local_dev = bbMult * ta.stdev(close, bbLength)
+    local_upperBB = local_basis + local_dev
+    local_lowerBB = local_basis - local_dev
+    local_ma = ta.sma(close, kcLength)
+    local_trueRange = ta.tr(true)
+    local_rangema = ta.sma(local_trueRange, kcLength)
+    local_upperKC = local_ma + local_rangema * kcMult
+    local_lowerKC = local_ma - local_rangema * kcMult
+    local_squeezeOn = local_lowerBB > local_lowerKC and local_upperBB < local_upperKC
+    local_squeezeOff = local_lowerBB < local_lowerKC or local_upperBB > local_upperKC
+    local_momentum = ta.mom(close, 8)
+    [local_squeezeOn, local_squeezeOff, local_momentum, local_upperBB, local_basis, local_lowerBB, local_upperKC, local_ma, local_lowerKC]
+
+float adjustedTradeFees = trade_fees
+
+// FONCTION POUR DÉTECTER LES FVG
+detectFVG() =>
+    var fairValueGap newFVG = na
+    var float gapSize = 0.0
+    var float gapSizePercent = 0.0
+    var string fvgType = ""
+    var int fvgBias = 0
+    var float fvgWeight = 0.0
+    var float topFVGLocal = na
+    var float bottomFVGLocal = na
+    var int lastFVGBarLocal = na
+    var int lastFVGBiasLocal = na
+    var string lastImbalanceTypeLocal = ""
+    var bool lastBullishFVGDetectedLocal = false
+    var bool lastBearishFVGDetectedLocal = false
+
+    bool localBullishFVGDetected = false
+    bool localBearishFVGDetected = false
+    bool localBullishConsecutiveDetected = false
+    bool localBearishConsecutiveDetected = false
+    bool localBullishLiquidityDetected = false
+    bool localBearishLiquidityDetected = false
+
+    float lastClose = close[1]
+    float lastOpen = open[1]
+    float last2High = high[2]
+    float last2Low = low[2]
+    float barDeltaPercent = (lastClose - lastOpen) / (lastOpen * 100)
+    bool newTimeframe = timeframe.change("")
+    bool fvgVolumeCondition = volume[1] > avgVolume * fvgVolumeThreshold
+    float thresholdFVG = fvgAutoThreshold ? ta.cum(math.abs(newTimeframe ? barDeltaPercent : 0)) / bar_index * 2 : fvgMinGapSize
+    float minGapHeight = fvgAvgRange * 0.01
+    float currentLow = low
+    float currentHigh = high
+
+    localBullishFVGDetected := false
+    localBearishFVGDetected := false
+    localBullishConsecutiveDetected := false
+    localBearishConsecutiveDetected := false
+    localBullishLiquidityDetected := false
+    localBearishLiquidityDetected := false
+
+    bool bullishFVGBase = currentLow > last2High and lastClose > last2High and (fvgAutoThreshold ? barDeltaPercent > thresholdFVG : true)
+    float fvgGapSizeBull = currentLow - last2High
+    float fvgGapSizePercentBull = fvgGapSizeBull / fvgAvgRange * 100
+    if bullishFVGBase and (fvgMinGapSize == 0.0 or fvgGapSizePercentBull >= fvgMinGapSize) and fvgGapSizeBull >= minGapHeight and fvgVolumeCondition
+        fvgType := "Standard"
+        fvgBias := 1
+        fvgWeight := 1.0
+        gapSize := fvgGapSizeBull
+        gapSizePercent := fvgGapSizePercentBull
+        newFVG := fairValueGap.new(currentLow, last2High, fvgBias, bar_index, time, bar_index, fvgType, true, 0, fvgWeight, true)
+        localBullishFVGDetected := true
+        box fvgBox = na
+        label fvgLabel = na
+        if showFVG
+            fvgBox := box.new(left=bar_index, right=bar_index + 20, top=currentLow, bottom=last2High, border_color=color.yellow, bgcolor=color.new(color.yellow, 20))
+            fvgLabel := label.new(bar_index + 20, currentLow, "Standard Bullish", color=color.new(color.yellow, 20), textcolor=color.white, style=label.style_label_left)
+        FVGWithBox fvgEntry = FVGWithBox.new(newFVG, fvgBox, fvgLabel)
+        array.push(allFVGs, fvgEntry)
+
+    bool bearishFVGBase = currentHigh < last2Low and lastClose < last2Low and (fvgAutoThreshold ? -barDeltaPercent > thresholdFVG : true)
+    float fvgGapSizeBear = last2Low - currentHigh
+    float fvgGapSizePercentBear = fvgGapSizeBear / fvgAvgRange * 100
+    if bearishFVGBase and (fvgMinGapSize == 0.0 or fvgGapSizePercentBear >= fvgMinGapSize) and fvgGapSizeBear >= minGapHeight and fvgVolumeCondition
+        fvgType := "Standard"
+        fvgBias := -1
+        fvgWeight := 1.0
+        gapSize := fvgGapSizeBear
+        gapSizePercent := fvgGapSizePercentBear
+        newFVG := fairValueGap.new(last2Low, currentHigh, fvgBias, bar_index, time, bar_index, fvgType, true, 0, fvgWeight, true)
+        localBearishFVGDetected := true
+        box fvgBox = na
+        label fvgLabel = na
+        if showFVG
+            fvgBox := box.new(left=bar_index, right=bar_index + 20, top=last2Low, bottom=currentHigh, border_color=color.yellow, bgcolor=color.new(color.yellow, 80))
+            fvgLabel := label.new(bar_index + 20, last2Low, "Standard Bearish", color=color.new(color.yellow, 80), textcolor=color.white, style=label.style_label_left)
+        FVGWithBox fvgEntry = FVGWithBox.new(newFVG, fvgBox, fvgLabel)
+        array.push(allFVGs, fvgEntry)
+
+    if fvgDetectConsecutive and low > high[1] and (fvgMinGapSize == 0.0 or (low - high[1]) / fvgAvgRange * 100 >= fvgMinGapSize) and fvgVolumeCondition
+        fvgType := "Consecutive"
+        fvgBias := 1
+        fvgWeight := 0.5
+        gapSize := low - high[1]
+        gapSizePercent := gapSize / fvgAvgRange * 100
+        newFVG := fairValueGap.new(low, high[1], fvgBias, bar_index, time, bar_index, fvgType, true, 0, fvgWeight, true)
+        localBullishConsecutiveDetected := true
+        box fvgBox = na
+        label fvgLabel = na
+        if showFVG
+            fvgBox := box.new(left=bar_index, right=bar_index + 20, top=low, bottom=high[1], border_color=color.purple, bgcolor=color.new(color.purple, 80))
+            fvgLabel := label.new(bar_index + 20, low, "Consecutive Bullish", color=color.new(color.purple, 70), textcolor=color.white, style=label.style_label_left)
+        FVGWithBox fvgEntry = FVGWithBox.new(newFVG, fvgBox, fvgLabel)
+        array.push(allFVGs, fvgEntry)
+
+    if fvgDetectConsecutive and high < low[1] and (fvgMinGapSize == 0.0 or (low[1] - high) / fvgAvgRange * 100 >= fvgMinGapSize) and fvgVolumeCondition
+        fvgType := "Consecutive"
+        fvgBias := -1
+        fvgWeight := 0.5
+        gapSize := low[1] - high
+        gapSizePercent := gapSize / fvgAvgRange * 100
+        newFVG := fairValueGap.new(low[1], high, fvgBias, bar_index, time, bar_index, fvgType, true, 0, fvgWeight, true)
+        localBearishConsecutiveDetected := true
+        box fvgBox = na
+        label fvgLabel = na
+        if showFVG
+            fvgBox := box.new(left=bar_index, right=bar_index + 20, top=low[1], bottom=high, border_color=color.purple, bgcolor=color.new(color.purple, 80))
+            fvgLabel := label.new(bar_index + 20, low[1], "Consecutive Bearish", color=color.new(color.purple, 70), textcolor=color.white, style=label.style_label_left)
+        FVGWithBox fvgEntry = FVGWithBox.new(newFVG, fvgBox, fvgLabel)
+        array.push(allFVGs, fvgEntry)
+
+    var float lastPivotHigh = na
+    var float lastPivotLow = na
+    var int lastPivotHighBar = na
+    var int lastPivotLowBar = na
+
+    float pivotHigh = ta.pivothigh(high, 3, 3)
+    float pivotLow = ta.pivotlow(low, 3, 3)
+    if not na(pivotHigh)
+        lastPivotHigh := pivotHigh
+        lastPivotHighBar := bar_index - 3
+    if not na(pivotLow)
+        lastPivotLow := pivotLow
+        lastPivotLowBar := bar_index - 3
+
+    float breakoutResistance = lastPivotHigh
+    float liquidityTolerance = fvgAvgRange * 0.005
+    bool resistanceCross = false
+    float breakoutClose = na
+    if not na(breakoutResistance) and not na(lastPivotHighBar)
+        for i = 0 to 4
+            if bar_index - lastPivotHighBar - i >= 0 and bar_index - lastPivotHighBar - i <= 5
+                if close[i] > breakoutResistance - liquidityTolerance
+                    resistanceCross := true
+                    breakoutClose := close[i]
+                    break
+    float moveAfterBreakoutBull = resistanceCross and not na(breakoutResistance) and not na(breakoutClose) ? (breakoutClose - breakoutResistance) / breakoutResistance * 100 : 0.0
+    bool volumeConditionBull = volume > avgVolume * fvgLiquidityVolumeThreshold
+    bool moveConditionBull = moveAfterBreakoutBull >= fvgLiquidityMinMove
+    if fvgDetectLiquidity and resistanceCross and volumeConditionBull and moveConditionBull
+        fvgType := "Liquidity"
+        fvgBias := 1
+        fvgWeight := 1.5
+        gapSize := breakoutClose - breakoutResistance
+        gapSizePercent := gapSize / fvgAvgRange * 100
+        newFVG := fairValueGap.new(breakoutClose, breakoutResistance, fvgBias, bar_index, time, bar_index, fvgType, true, 0, fvgWeight, true)
+        localBullishLiquidityDetected := true
+        box fvgBox = na
+        label fvgLabel = na
+        if showFVG
+            fvgBox := box.new(left=bar_index, right=bar_index + 20, top=breakoutClose, bottom=breakoutResistance, border_color=color.new(#006400, 0), bgcolor=color.new(#006400, 80))
+            fvgLabel := label.new(bar_index + 20, breakoutClose, "Liquidity Bullish", color=color.new(#006400, 70), textcolor=color.white, style=label.style_label_left)
+        FVGWithBox fvgEntry = FVGWithBox.new(newFVG, fvgBox, fvgLabel)
+        array.push(allFVGs, fvgEntry)
+
+    float breakoutSupport = lastPivotLow
+    bool supportCross = false
+    float breakoutCloseBear = na
+    if not na(breakoutSupport) and not na(lastPivotLowBar)
+        for i = 0 to 4
+            if bar_index - lastPivotLowBar - i >= 0 and bar_index - lastPivotLowBar - i <= 5
+                if close[i] < breakoutSupport + liquidityTolerance
+                    supportCross := true
+                    breakoutCloseBear := close[i]
+                    break
+    float moveAfterBreakoutBear = supportCross and not na(breakoutSupport) and not na(breakoutCloseBear) ? (breakoutSupport - breakoutCloseBear) / breakoutSupport * 100 : 0.0
+    bool volumeConditionBear = volume > avgVolume * fvgLiquidityVolumeThreshold
+    bool moveConditionBear = moveAfterBreakoutBear >= fvgLiquidityMinMove
+    if fvgDetectLiquidity and supportCross and volumeConditionBear and moveConditionBear
+        fvgType := "Liquidity"
+        fvgBias := -1
+        fvgWeight := 1.5
+        gapSize := breakoutSupport - breakoutCloseBear
+        gapSizePercent := gapSize / fvgAvgRange * 100
+        newFVG := fairValueGap.new(breakoutSupport, breakoutCloseBear, fvgBias, bar_index, time, bar_index, fvgType, true, 0, fvgWeight, true)
+        localBearishLiquidityDetected := true
+        box fvgBox = na
+        label fvgLabel = na
+        if showFVG
+            fvgBox := box.new(left=bar_index, right=bar_index + 20, top=breakoutSupport, bottom=breakoutCloseBear, border_color=color.new(#8B0000, 0), bgcolor=color.new(#8B0000, 80))
+            fvgLabel := label.new(bar_index + 20, breakoutSupport, "Liquidity Bearish", color=color.new(#8B0000, 70), textcolor=color.white, style=label.style_label_left)
+        FVGWithBox fvgEntry = FVGWithBox.new(newFVG, fvgBox, fvgLabel)
+        array.push(allFVGs, fvgEntry)
+
+    if not na(newFVG)
+        topFVGLocal := math.max(newFVG.top, newFVG.bottom)
+        bottomFVGLocal := math.min(newFVG.top, newFVG.bottom)
+        float height = topFVGLocal - bottomFVGLocal
+        if height < fvgAvgRange * 0.01
+            topFVGLocal := topFVGLocal + (fvgAvgRange * 0.01 - height) / 2
+            bottomFVGLocal := bottomFVGLocal - (fvgAvgRange * 0.01 - height) / 2
+        newFVG.top := topFVGLocal
+        newFVG.bottom := bottomFVGLocal
+        lastFVGBarLocal := bar_index
+        lastFVGBiasLocal := fvgBias
+        lastImbalanceTypeLocal := fvgType
+        lastBullishFVGDetectedLocal := fvgBias == 1
+        lastBearishFVGDetectedLocal := fvgBias == -1
+
+    [newFVG, gapSize, gapSizePercent, topFVGLocal, bottomFVGLocal, lastFVGBarLocal, lastFVGBiasLocal, lastImbalanceTypeLocal, lastBullishFVGDetectedLocal, lastBearishFVGDetectedLocal, localBullishFVGDetected, localBearishFVGDetected, localBullishConsecutiveDetected, localBearishConsecutiveDetected, localBullishLiquidityDetected, localBearishLiquidityDetected]
+
+// CALCUL DES INDICATEURS TECHNIQUES
+var bool isFirstBar = false
+isConfirmed := barstate.isconfirmed
+isFirstBar := barstate.isfirst
+
+if pair == "BTCUSD"
+    valeur_pips := 1.0
+else if pair == "XAUUSD"
+    valeur_pips := 10.0
+else if pair == "USDCAD"
+    valeur_pips := 10.0
+else if pair == "USDJPY"
+    valeur_pips := 9.13
+else if pair == "GBPUSD"
+    valeur_pips := 10.0
+else if pair == "EURUSD"
+    valeur_pips := 10.0
+else if pair == "CHFJPY"
+    valeur_pips := 7.7
+else if pair == "GBPJPY"
+    valeur_pips := 9.13
+else if pair == "EURJPY"
+    valeur_pips := 9.13
+else if pair == "EURGBP"
+    valeur_pips := 12.5
+else if pair == "NZDJPY"
+    valeur_pips := 6.96
+else if pair == "AUDUSD"
+    valeur_pips := 10
+
+// Mise à jour des variables de cache
+cachedRange := high - low
+cachedAvgRange := ta.sma(cachedRange, lengthSMA20)
+cachedFvgAvgRange := ta.sma(cachedRange, lengthSMA5)
+cachedVolatilitySma := ta.sma(cachedRange, lengthVolatilitySma)
+cachedBBWidthSma := ta.sma(cachedVolatilitySma, lengthVolatilitySma)
+cachedAvgVolume := ta.sma(volume, lengthSMA20)
+cachedAtr := ta.atr(14)
+
+if isFirstBar
+    backtestTradeCount := 0
+    backtestTotalTradeDuration := 0.0
+    backtestAverageTradeDuration := 0.0
+    winningTrades := 0
+    losingTrades := 0
+    tradesBreakEven := 0
+    isFirstTrade := true
+
+obv = ta.obv
+obvMA = ta.sma(obv, obvLength)
+obvCrossUp = ta.crossover(obv, obvMA)
+obvCrossDown = ta.crossunder(obv, obvMA)
+obvRising = (obvCrossUp or (obv > obvMA and obv[1] > obvMA[1] and obv[2] > obvMA[2]))
+obvFalling = (obvCrossDown or (obv < obvMA and obv[1] < obvMA[1] and obv[2] < obvMA[2]))
+
+if useOBV or showOBV
+    var int lookback = 50
+    obvMax = ta.highest(obv, lookback)
+    obvMin = ta.lowest(obv, lookback)
+    priceMax = ta.highest(close, lookback)
+    priceMin = ta.lowest(close, lookback)
+    obvRange = obvMax - obvMin
+    priceRange = priceMax - priceMin
+    scaleFactor = obvRange != 0 ? priceRange / obvRange : 1.0
+    obvNormalized := (obv - obvMin) * scaleFactor + priceMin
+    obvMANormalized := (obvMA - obvMin) * scaleFactor + priceMin
+else
+    obvNormalized := na
+    obvMANormalized := na
+
+if useSTMA or showSTMA
+    stmaHMA := ta.wma(2 * ta.wma(close, stmaLength / 2) - ta.wma(close, stmaLength), math.round(math.sqrt(stmaLength)))
+    float stmaMA = stmaHMA
+    float stmaAtr = ta.atr(stmaPeriods)
+    float stmaUpTemp = stmaMA - stmaMultiplier * stmaAtr
+    float stmaUp1 = nz(stmaUp[1], stmaUpTemp)
+    stmaUp := close[1] > stmaUp1 ? math.max(stmaUpTemp, stmaUp1) : stmaUpTemp
+    float stmaDnTemp = stmaMA + stmaMultiplier * stmaAtr
+    float stmaDn1 = nz(stmaDn[1], stmaDnTemp)
+    stmaDn := close[1] < stmaDn1 ? math.min(stmaDnTemp, stmaDn1) : stmaDnTemp
+    stmaTrend := nz(stmaTrend[1], stmaTrend)
+    stmaTrend := stmaTrend == -1 and close > stmaDn1 ? 1 : stmaTrend == 1 and close < stmaUp1 ? -1 : stmaTrend
+    stmaUpPlot := stmaTrend == 1 ? stmaUp : na
+    stmaDnPlot := stmaTrend == 1 ? na : stmaDn
+    stmaMPlot := ohlc4
+else
+    stmaHMA := na
+    stmaUp := na
+    stmaDn := na
+    stmaTrend := na
+    stmaUpPlot := na
+    stmaDnPlot := na
+    stmaMPlot := na
+
+if useSqueeze or showSqueeze
+    [squeezeOn_, squeezeOff_, mom_, upperBB_, basis_, lowerBB_, upperKC_, ma_, lowerKC_] = calculateSqueeze()
+    squeezeOn := squeezeOn_
+    squeezeOff := squeezeOff_
+    mom := mom_
+    upperBB := upperBB_
+    basis := basis_
+    lowerBB := lowerBB_
+    upperKC := upperKC_
+    ma := ma_
+    lowerKC := lowerKC_
+    squeezeOnStart := squeezeOn and not squeezeOn[1]
+    squeezeOffStart := squeezeOff and not squeezeOff[1]
+else
+    squeezeOn := false
+    squeezeOff := false
+    mom := na
+    upperBB := na
+    basis := na
+    lowerBB := na
+    upperKC := na
+    ma := na
+    lowerKC := na
+    squeezeOnStart := false
+    squeezeOffStart := false
+
+bool squeezeLongCondition = useSqueeze ? (squeezeOff and mom > minMomentum * avgRange and (volatilitySma14 > bbWidthSmaPrecomputed)) : true
+bool squeezeShortCondition = useSqueeze ? (squeezeOff and mom < -minMomentum * avgRange and (volatilitySma14 > bbWidthSmaPrecomputed)) : true
+
+var float obvStdev = ta.stdev(obv, obvLength)
+var float bbWidthSma = bbWidthSmaPrecomputed
+
+// Simple Moving Average
+float smaForConditions = useLongTermSMA ? ta.sma(close, longTermTrendLength) : na
+float smaForDisplay = showLongTermSMA ? ta.sma(close, longTermTrendLength) : na
+longTermSMA := smaForConditions
+// Calcul de la pente de la SMA pour la couleur
+float smaSlope = useLongTermSMA and showLongTermSMA ? ta.sma(close, longTermTrendLength)[0] - ta.sma(close, longTermTrendLength)[1] : na
+
+currentATR = ta.atr(volatilityPeriod)
+atrAverage = ta.sma(currentATR, 50)
+
+// Calculs pour la pondération dynamique
+atrVolatility = ta.atr(atrWeightPeriod)
+volatilityRatio = atrVolatility / atrAverage
+trendStrength = math.abs(smaSlope)
+if volatilityRatio <= volatilityLowThreshold
+    weightFibonacci := weightFibonacciBase * 1.5
+    weightSTMA := weightSTMABase * 0.7
+else if trendStrength >= trendStrengthThreshold and volatilityRatio >= volatilityHighThreshold
+    weightFibonacci := weightFibonacciBase * 0.7
+    weightSTMA := weightSTMABase * 1.5
+else
+    weightFibonacci := weightFibonacciBase
+    weightSTMA := weightSTMABase
+
+float obvMAValue = useOBV ? ta.sma(obv, 14) : na
+float volumeRatio = volume / avgVolume
+bool sufficientVolume = volumeRatio > volumeThreshold
+bool inRange = ta.stdev(close, bbLength) < bbWidthThreshold * atrAverage
+
+doji = math.abs(close - open) <= (high - low) * 0.05
+bullishEngulfing = close > open and close[1] < open[1] and close > open[1] and open < close[1]
+bearishEngulfing = close < open and close[1] > open[1] and close < open[1] and open > close[1]
+pinBar = math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and ((high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent or (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent)
+hammer = pinBar and close > open and (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent
+invertedHammer = pinBar and close > open and (high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent
+pinBarBullish = pinBar and close > open and not hammer and not invertedHammer
+shootingStar = pinBar and close < open and (high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent
+pinBarBearish = pinBar and close < open and not shootingStar
+marubozuUp = math.abs(high - close) < (high - low) * marubozuWickMaxPercent and math.abs(open - low) < (high - low) * marubozuWickMaxPercent and math.abs(close - open) >= (high - low) * marubozuBodyMinPercent and close > open
+marubozuDown = math.abs(high - open) < (high - low) * marubozuWickMaxPercent and math.abs(close - low) < (high - low) * marubozuWickMaxPercent and math.abs(close - open) >= (high - low) * marubozuBodyMinPercent and close < open
+
+float tolerance = na
+supportLevel = array.size(supportLevels) > 0 ? array.get(supportLevels, array.size(supportLevels) - 1) : na
+resistanceLevel = array.size(resistanceLevels) > 0 ? array.get(resistanceLevels, array.size(resistanceLevels) - 1) : na
+if not na(supportLevel)
+    tolerance := supportLevel * (proximity / 100)
+else
+    tolerance := close * (proximity / 100)
+
+if useCandlePatternsInConditions or showCandlePatterns
+    if doji
+        candlePattern := "Doji (Neutre)"
+        candleIsUp := true
+    else if bullishEngulfing
+        candlePattern := "Bullish Engulfing"
+        candleIsUp := true
+    else if bearishEngulfing
+        candlePattern := "Bearish Engulfing"
+        candleIsUp := false
+    else if hammer and close[1] < close[2] and not na(supportLevel) and close >= supportLevel - tolerance
+        candlePattern := "Hammer"
+        candleIsUp := true
+    else if invertedHammer and close[1] < close[2] and not na(supportLevel) and close >= supportLevel - tolerance
+        candlePattern := "Inverted Hammer"
+        candleIsUp := true
+    else if pinBarBullish and close[1] < close[2] and not na(supportLevel) and close >= supportLevel - tolerance
+        candlePattern := "Pin Bar Bullish"
+        candleIsUp := true
+    else if shootingStar and close[1] > close[2] and not na(resistanceLevel) and close <= resistanceLevel + tolerance
+        candlePattern := "Shooting Star"
+        candleIsUp := false
+    else if pinBarBearish and close[1] > close[2] and not na(resistanceLevel) and close <= resistanceLevel + tolerance
+        candlePattern := "Pin Bar Bearish"
+        candleIsUp := false
+    else if marubozuUp
+        candlePattern := "Marubozu Up"
+        candleIsUp := true
+    else if marubozuDown
+        candlePattern := "Marubozu Down"
+        candleIsUp := false
+    else
+        candlePattern := ""
+        candleIsUp := false
+else
+    candlePattern := ""
+    candleIsUp := false
+
+strongDownMove = ta.lowest(close, definitionMove) == close and (open - close) > (threshold * avgRange)
+strongUpMove = ta.highest(close, definitionMove) == close and (close - open) > (threshold * avgRange)
+lastBullishBeforeDrop = strongDownMove and close[1] > open[1]
+lastBearishBeforeUp = strongUpMove and close[1] < open[1]
+topOBBullish = ta.valuewhen(lastBullishBeforeDrop, high[1], 0)
+bottomOBBullish = ta.valuewhen(lastBullishBeforeDrop, low[1], 0)
+leftBarBullish = int(ta.valuewhen(lastBullishBeforeDrop, bar_index[1], 0))
+rightBarBullish = leftBarBullish + obHorizontalSize
+customOBBullish = bottomOBBullish
+moveAmplitudeBullish = ta.valuewhen(lastBullishBeforeDrop, open - close, 0)
+volumeAtBullishOB = ta.valuewhen(lastBullishBeforeDrop, volume[1], 0)
+volumeRelBullishOB = volumeAtBullishOB / avgVolume
+adviceBullish = volumeRelBullishOB > 1.5 and moveAmplitudeBullish > (threshold * avgRange) ? "Forte pression vendeuse, surveillez cassure sous " + str.tostring(customOBBullish, "#.##") + "$" : "Mouvement faible, surveillez consolidation à " + str.tostring(topOBBullish, "#.##") + "$"
+topOBBearish = ta.valuewhen(lastBearishBeforeUp, high[1], 0)
+bottomOBBearish = ta.valuewhen(lastBearishBeforeUp, low[1], 0)
+leftBarBearish = int(ta.valuewhen(lastBearishBeforeUp, bar_index[1], 0))
+rightBarBearish = leftBarBearish + obHorizontalSize
+customOBBearish = bottomOBBearish
+moveAmplitudeBearish = ta.valuewhen(lastBearishBeforeUp, close - open, 0)
+volumeAtBearishOB = ta.valuewhen(lastBearishBeforeUp, volume[1], 0)
+volumeRelBearishOB = volumeAtBearishOB / avgVolume
+adviceBearish = volumeRelBearishOB > 1.5 and moveAmplitudeBearish > (threshold * avgRange) ? "Forte pression acheteuse, surveillez cassure sur " + str.tostring(topOBBearish, "#.##") + "$" : "Mouvement faible, surveillez consolidation à " + str.tostring(customOBBearish, "#.##") + "$"
+
+// Calcul MTF
+if useMTF
+    mtfClose := request.security(syminfo.tickerid, mtfTimeframe, close, lookahead=barmerge.lookahead_off)
+    mtfSMA := request.security(syminfo.tickerid, mtfTimeframe, ta.sma(close, mtfSMAPeriod), lookahead=barmerge.lookahead_off)
+    mtfTrendUp := mtfClose > mtfSMA
+    mtfTrendDown := mtfClose < mtfSMA
+else
+    mtfClose := na
+    mtfSMA := na
+    mtfTrendUp := true
+    mtfTrendDown := true
+
+// Calcul de la distance MTF en pips
+float mtfDistancePips = useMTF and not na(mtfClose) and not na(mtfSMA) ? (mtfClose - mtfSMA) / valeur_pips : na
+
+// Déclarations globales pour FVG
+var fairValueGap newFVG = na
+var float fvgSize = 0.0
+var float fvgSizePercent = 0.0
+var float topFVGLocal = na
+var float bottomFVGLocal = na
+var int lastFVGBarLocal = na
+var int lastFVGBiasLocal = na
+var string lastImbalanceTypeLocal = ""
+var bool lastBullishFVGDetectedLocal = false
+var bool lastBearishFVGDetectedLocal = false
+var bool localBullishFVGDetected = false
+var bool localBearishFVGDetected = false
+var bool localBullishConsecutiveDetected = false
+var bool localBearishConsecutiveDetected = false
+var bool localBullishLiquidityDetected = false
+var bool localBearishLiquidityDetected = false
+// Déclarations globales pour les conditions FVG
+var bool fvgLongConditionLarge = false
+var bool fvgShortConditionLarge = false
+var bool fvgLongConditionConsecutive = false
+var bool fvgShortConditionConsecutive = false
+var bool fvgLongConditionLiquidity = false
+var bool fvgShortConditionLiquidity = false
+
+// Appel conditionné à detectFVG
+if useFVG or showFVG
+    [newFVG, fvgSize, fvgSizePercent, topFVGLocal, bottomFVGLocal, lastFVGBarLocal, lastFVGBiasLocal, lastImbalanceTypeLocal, lastBullishFVGDetectedLocal, lastBearishFVGDetectedLocal, localBullishFVGDetected, localBearishFVGDetected, localBullishConsecutiveDetected, localBearishConsecutiveDetected, localBullishLiquidityDetected, localBearishLiquidityDetected] = detectFVG()
+else
+    // Réinitialisation explicite
+    newFVG := na
+    fvgSize := 0.0
+    fvgSizePercent := 0.0
+    topFVGLocal := na
+    bottomFVGLocal := na
+    lastFVGBarLocal := na
+    lastFVGBiasLocal := na
+    lastImbalanceTypeLocal := ""
+    lastBullishFVGDetectedLocal := false
+    lastBearishFVGDetectedLocal := false
+    localBullishFVGDetected := false
+    localBearishFVGDetected := false
+    localBullishConsecutiveDetected := false
+    localBearishConsecutiveDetected := false
+    localBullishLiquidityDetected := false
+    localBearishLiquidityDetected := false
+    fvgLongConditionLarge := false
+    fvgShortConditionLarge := false
+    fvgLongConditionConsecutive := false
+    fvgShortConditionConsecutive := false
+    fvgLongConditionLiquidity := false
+    fvgShortConditionLiquidity := false
+
+// Conditions FVG avec protection
+if not barstate.isfirst and useFVG and array.size(allFVGs) > 0
+    for i = 0 to array.size(allFVGs) - 1
+        FVGWithBox fvgEntry = array.get(allFVGs, i)
+        fairValueGap fvg = fvgEntry.fvg
+        if not na(fvg.bias)
+            float top = fvg.top
+            float bottom = fvg.bottom
+            bool isBull = fvg.bias == 1
+            string fvgType = fvg.imbalanceType
+            if fvgType == "Standard"
+                if isBull and close <= top and close >= bottom
+                    fvgLongConditionLarge := true
+                else if not isBull and close >= bottom and close <= top
+                    fvgShortConditionLarge := true
+            else if fvgType == "Consecutive"
+                if isBull and close <= top and close >= bottom
+                    fvgLongConditionConsecutive := true
+                else if not isBull and close >= bottom and close <= top
+                    fvgShortConditionConsecutive := true
+            else if fvgType == "Liquidity"
+                if isBull and close <= top and close >= bottom
+                    fvgLongConditionLiquidity := true
+                else if not isBull and close >= bottom and close <= top
+                    fvgShortConditionLiquidity := true
+
+bool fvgLongCondition = useFVG ? (fvgLongConditionLarge or fvgLongConditionConsecutive or fvgLongConditionLiquidity) : true
+bool fvgShortCondition = useFVG ? (fvgShortConditionLarge or fvgShortConditionConsecutive or fvgShortConditionLiquidity) : true
+
+bool bullishBreakout = false
+bool bearishBreakout = false
+var float breakoutSupport = na
+var float breakoutResistance = na
+
+if useBreakout
+    breakoutSupport := array.size(supportLevels) > 0 ? array.get(supportLevels, array.size(supportLevels) - 1) : na
+    breakoutResistance := array.size(resistanceLevels) > 0 ? array.get(resistanceLevels, array.size(resistanceLevels) - 1) : na
+    bool resistanceCross = ta.crossover(close, breakoutResistance)
+    bool supportCross = ta.crossunder(close, breakoutSupport)
+    breakoutResistanceCross := not na(breakoutResistance) and resistanceCross
+    breakoutSupportCross := not na(breakoutSupport) and supportCross
+    if breakoutResistanceCross
+        bullishBreakout := true
+        lastBreakoutBar := bar_index
+        lastBreakoutDirection := 1
+    if breakoutSupportCross
+        bearishBreakout := true
+        lastBreakoutBar := bar_index
+        lastBreakoutDirection := -1
+
+obvLongCondition = useOBV ? (obvRising and obv > obvMA + minOBVGap * obvStdev) : true
+obvShortCondition = useOBV ? (obvFalling and obv < obvMA - minOBVGap * obvStdev) : true
+
+candleLongCondition = useCandlePatternsInConditions ? (bullishEngulfing or hammer or invertedHammer or pinBarBullish or marubozuUp) and volatilitySma14 > bbWidthSmaPrecomputed : true
+candleShortCondition = useCandlePatternsInConditions ? (bearishEngulfing or shootingStar or pinBarBearish or marubozuDown) and volatilitySma14 > bbWidthSmaPrecomputed : true
+
+obLongCondition = useOB ? (lastBearishBeforeUp and not na(customOBBearish) and close > customOBBearish and close <= customOBBearish + 0.5 * avgRange and volumeAtBearishOB > 1.5 * avgVolume) : true
+obShortCondition = useOB ? (lastBullishBeforeDrop and not na(customOBBullish) and close < customOBBullish and close >= customOBBullish - 0.5 * avgRange and volumeAtBullishOB > 1.5 * avgVolume) : true
+
+stmaLongCondition = useSTMA ? (stmaTrend == 1 and close > stmaUp) : true
+stmaShortCondition = useSTMA ? (stmaTrend == -1 and close < stmaDn) : true
+
+var int alignedIndicatorsCount = 0
+
+// Calcul des signaux par catégorie
+var int trendCountLong = 0
+var int trendCountShort = 0
+var int momentumCountLong = 0
+var int momentumCountShort = 0
+var int volumeCountLong = 0
+var int volumeCountShort = 0
+var int activeTrendIndicators = 0
+var int activeMomentumIndicators = 0
+var int activeVolumeIndicators = 0
+
+// Réinitialiser les compteurs
+trendCountLong := 0
+trendCountShort := 0
+momentumCountLong := 0
+momentumCountShort := 0
+volumeCountLong := 0
+volumeCountShort := 0
+activeTrendIndicators := 0
+activeMomentumIndicators := 0
+activeVolumeIndicators := 0
+
+// Catégorie Tendance
+if useLongTermSMA
+    activeTrendIndicators := activeTrendIndicators + 1
+    if close > longTermSMA
+        trendCountLong := trendCountLong + 1
+    else if close < longTermSMA
+        trendCountShort := trendCountShort + 1
+if useSTMA
+    activeTrendIndicators := activeTrendIndicators + 1
+    if stmaTrend == 1
+        trendCountLong := trendCountLong + 1
+    else if stmaTrend == -1
+        trendCountShort := trendCountShort + 1
+if useMTF
+    activeTrendIndicators := activeTrendIndicators + 1
+    if mtfTrendUp
+        trendCountLong := trendCountLong + 1
+    else if mtfTrendDown
+        trendCountShort := trendCountShort + 1
+if useFibonacci
+    activeTrendIndicators := activeTrendIndicators + 1
+    if fibLongCondition
+        trendCountLong := trendCountLong + 1
+    else if fibShortCondition
+        trendCountShort := trendCountShort + 1
+if useSR
+    activeTrendIndicators := activeTrendIndicators + 1
+    if srLongCondition
+        trendCountLong := trendCountLong + 1
+    else if srShortCondition
+        trendCountShort := trendCountShort + 1
+
+// Catégorie Momentum
+if useSqueeze
+    activeMomentumIndicators := activeMomentumIndicators + 1
+    if squeezeLongCondition
+        momentumCountLong := momentumCountLong + 1
+    else if squeezeShortCondition
+        momentumCountShort := momentumCountShort + 1
+if useCandlePatternsInConditions
+    activeMomentumIndicators := activeMomentumIndicators + 1
+    if candleLongCondition
+        momentumCountLong := momentumCountLong + 1
+    else if candleShortCondition
+        momentumCountShort := momentumCountShort + 1
+if useBreakout
+    activeMomentumIndicators := activeMomentumIndicators + 1
+    if bullishBreakout
+        momentumCountLong := momentumCountLong + 1
+    else if bearishBreakout
+        momentumCountShort := momentumCountShort + 1
+
+// Catégorie Volume
+if useOBV
+    activeVolumeIndicators := activeVolumeIndicators + 1
+    if obvLongCondition
+        volumeCountLong := volumeCountLong + 1
+    else if obvShortCondition
+        volumeCountShort := volumeCountShort + 1
+if useFVG
+    activeVolumeIndicators := activeVolumeIndicators + 1
+    if fvgLongCondition
+        volumeCountLong := volumeCountLong + 1
+    else if fvgShortCondition
+        volumeCountShort := volumeCountShort + 1
+if useOB
+    activeVolumeIndicators := activeVolumeIndicators + 1
+    if lastBearishOBDetected
+        volumeCountLong := volumeCountLong + 1
+    else if lastBullishOBDetected
+        volumeCountShort := volumeCountShort + 1
+
+// Seuils dynamiques par catégorie
+int trendThreshold = math.min(2, activeTrendIndicators)
+int momentumThreshold = math.min(1, activeMomentumIndicators)
+int volumeThresholdCategory = math.min(1, activeVolumeIndicators)
+
+bool sufficientIndicatorsAligned = alignedIndicatorsCount >= minIndicatorsAligned
+
+if trendScore > 0
+    lastTrendDirection := 1
+else if trendScore < 0
+    lastTrendDirection := -1
+
+// FIBONACCI RETRACEMENT
+fibTimelapsSeconds = fibTimelapsHours * 60 * 60
+barsInPeriod = math.round(fibTimelapsSeconds / timeframeSeconds)
+barsInPeriod := math.max(barsInPeriod, 1)
+barsInPeriod := barsInPeriod * 2
+trendAverage := ta.sma(close, barsInPeriod)
+minTimeOffsetSeconds = 30 * 60
+barsToExcludeInitial = math.round(minTimeOffsetSeconds / timeframeSeconds)
+barsToExcludeInitial := math.max(barsToExcludeInitial, 0)
+
+float highestHigh = na
+float lowestLow = na
+bool isUptrend = trendScore > 0
+
+if useFibonacci or showFibonacci
+    for i = 0 to barsInPeriod - 1
+        if i < barsToExcludeInitial
+            continue
+        float candleHigh = high[i]
+        float candleLow = low[i]
+        if na(candleHigh) or na(candleLow)
+            continue
+        if na(highestHigh)
+            highestHigh := candleHigh
+        if na(lowestLow)
+            lowestLow := candleLow
+        highestHigh := math.max(highestHigh, candleHigh)
+        lowestLow := math.min(lowestLow, candleLow)
+
+    if na(highestHigh) or na(lowestLow)
+        highestHigh := high
+        lowestLow := low
+
+    fibHigh := highestHigh
+    fibLow := lowestLow
+
+    bool fibExtremesChanged = true
+
+    if not na(fibHigh) and not na(fibLow)
+        fibRange := fibHigh - fibLow
+        if isUptrend
+            fibLevel1Price := fibHigh  // 1.0
+            fibLevel2Price := fibHigh - fibRange * (1 - fibLevel2)  // 0.786
+            fibLevel3Price := fibHigh - fibRange * (1 - fibLevel3)  // 0.618
+            fibLevel4Price := fibHigh - fibRange * (1 - fibLevel4)  // 0.5
+            fibLevel5Price := fibLow   // 0.0
+        else
+            fibLevel1Price := fibHigh  // 1.0
+            fibLevel2Price := fibHigh - fibRange * (1 - fibLevel2)  // 0.786
+            fibLevel3Price := fibHigh - fibRange * (1 - fibLevel3)  // 0.618
+            fibLevel4Price := fibHigh - fibRange * (1 - fibLevel4)  // 0.5
+            fibLevel5Price := fibLow   // 0.0
+
+        float tolerancePrice = 0.0
+        if (useFibonacci or showFibonacci) and not na(fibRange)
+            tolerancePrice := fibRange * (fibTolerance / 100)
+            nearFibLevelBullish := (close >= fibLevel1Price - tolerancePrice and close <= fibLevel1Price + tolerancePrice) or
+                                   (close >= fibLevel2Price - tolerancePrice and close <= fibLevel2Price + tolerancePrice) or
+                                   (close >= fibLevel3Price - tolerancePrice and close <= fibLevel3Price + tolerancePrice) or
+                                   (close >= fibLevel4Price - tolerancePrice and close <= fibLevel4Price + tolerancePrice) or
+                                   (close >= fibLevel5Price - tolerancePrice and close <= fibLevel5Price + tolerancePrice)
+            nearFibLevelBearish := nearFibLevelBullish
+
+        if useFibonacci and not na(fibRange)
+            tolerancePrice := fibRange * (fibTolerance / 100)
+            if close >= fibLevel1Price - tolerancePrice and close <= fibLevel1Price + tolerancePrice
+                fibClosestLevel := float(fibLevel1)
+                fibClosestLevelStr := str.tostring(fibLevel1 * 100, "#.##") + "%"
+                fibClosestLevelValue := fibLevel1Price
+            else if close >= fibLevel2Price - tolerancePrice and close <= fibLevel2Price + tolerancePrice
+                fibClosestLevel := float(fibLevel2)
+                fibClosestLevelStr := str.tostring(fibLevel2 * 100, "#.##") + "%"
+                fibClosestLevelValue := fibLevel2Price
+            else if close >= fibLevel3Price - tolerancePrice and close <= fibLevel3Price + tolerancePrice
+                fibClosestLevel := float(fibLevel3)
+                fibClosestLevelStr := str.tostring(fibLevel3 * 100, "#.##") + "%"
+                fibClosestLevelValue := fibLevel3Price
+            else if close >= fibLevel4Price - tolerancePrice and close <= fibLevel4Price + tolerancePrice
+                fibClosestLevel := float(fibLevel4)
+                fibClosestLevelStr := str.tostring(fibLevel4 * 100, "#.##") + "%"
+                fibClosestLevelValue := fibLevel4Price
+            else if close >= fibLevel5Price - tolerancePrice and close <= fibLevel5Price + tolerancePrice
+                fibClosestLevel := float(fibLevel5)
+                fibClosestLevelStr := str.tostring(fibLevel5 * 100, "#.##") + "%"
+                fibClosestLevelValue := fibLevel5Price
+
+        if not na(fibClosestLevel)
+            fibIsUp := true
+
+        fibLongCondition := useFibonacci ? (nearFibLevelBullish and (fibClosestLevel == float(fibLevel3) or fibClosestLevel == float(fibLevel4)) and close[1] < close[2]) : true
+        fibShortCondition := useFibonacci ? (nearFibLevelBearish and (fibClosestLevel == float(fibLevel3) or fibClosestLevel == float(fibLevel4)) and close[1] > close[2]) : true
+
+    if showFibonacci and fibExtremesChanged and bar_index >= 4 and bar_index > 0 and array.size(tradesArray) == 0
+        if not na(fibLine1Stored)
+            line.delete(fibLine1Stored)
+            label.delete(fibLabel1Stored)
+            line.delete(fibLine2Stored)
+            label.delete(fibLabel2Stored)
+            line.delete(fibLine3Stored)
+            label.delete(fibLabel3Stored)
+            line.delete(fibLine4Stored)
+            label.delete(fibLabel4Stored)
+            line.delete(fibLine5Stored)
+            label.delete(fibLabel5Stored)
+            box.delete(fibBoxBetween50and618Stored)
+            box.delete(fibBoxBetween618and786Stored)
+
+        int rightOffset = bar_index + 20
+
+        // Assign labels based on isUptrend
+        if isUptrend
+            fibLine1Stored := line.new(bar_index - 20, fibLevel1Price, rightOffset, fibLevel1Price, color=color.new(color.white, 70), style=line.style_solid)
+            fibLabel1Stored := label.new(rightOffset, fibLevel1Price, str.tostring(fibLevel1, "#.###") + " | " + str.tostring(fibLevel1Price, "#.#####") + " $", color=color.new(color.white, 70), textcolor=color.black, style=label.style_label_left)
+            fibLine2Stored := line.new(bar_index - 20, fibLevel2Price, rightOffset, fibLevel2Price, color=color.new(color.blue, 70), style=line.style_solid)
+            fibLabel2Stored := label.new(rightOffset, fibLevel2Price, str.tostring(fibLevel2, "#.###") + " | " + str.tostring(fibLevel2Price, "#.#####") + " $", color=color.new(color.blue, 70), textcolor=color.white, style=label.style_label_left)
+            fibLine3Stored := line.new(bar_index - 20, fibLevel3Price, rightOffset, fibLevel3Price, color=color.new(color.blue, 70), style=line.style_solid)
+            fibLabel3Stored := label.new(rightOffset, fibLevel3Price, str.tostring(fibLevel3, "#.###") + " | " + str.tostring(fibLevel3Price, "#.#####") + " $", color=color.new(color.blue, 70), textcolor=color.white, style=label.style_label_left)
+            fibLine4Stored := line.new(bar_index - 20, fibLevel4Price, rightOffset, fibLevel4Price, color=color.new(color.blue, 70), style=line.style_solid)
+            fibLabel4Stored := label.new(rightOffset, fibLevel4Price, str.tostring(fibLevel4, "#.###") + " | " + str.tostring(fibLevel4Price, "#.#####") + " $", color=color.new(color.blue, 70), textcolor=color.white, style=label.style_label_left)
+            fibLine5Stored := line.new(bar_index - 20, fibLevel5Price, rightOffset, fibLevel5Price, color=color.new(color.white, 70), style=line.style_solid)
+            fibLabel5Stored := label.new(rightOffset, fibLevel5Price, str.tostring(fibLevel5, "#.###") + " | " + str.tostring(fibLevel5Price, "#.#####") + " $", color=color.new(color.white, 70), textcolor=color.black, style=label.style_label_left)
+        else
+            fibLine5Stored := line.new(bar_index - 20, fibLevel5Price, rightOffset, fibLevel5Price, color=color.new(color.white, 70), style=line.style_solid)
+            fibLabel5Stored := label.new(rightOffset, fibLevel5Price, str.tostring(fibLevel1, "#.###") + " | " + str.tostring(fibLevel5Price, "#.#####") + " $", color=color.new(color.white, 70), textcolor=color.black, style=label.style_label_left)
+            fibLine4Stored := line.new(bar_index - 20, fibLevel4Price, rightOffset, fibLevel4Price, color=color.new(color.blue, 70), style=line.style_solid)
+            fibLabel4Stored := label.new(rightOffset, fibLevel4Price, str.tostring(fibLevel2, "#.###") + " | " + str.tostring(fibLevel4Price, "#.#####") + " $", color=color.new(color.blue, 70), textcolor=color.white, style=label.style_label_left)
+            fibLine3Stored := line.new(bar_index - 20, fibLevel3Price, rightOffset, fibLevel3Price, color=color.new(color.blue, 70), style=line.style_solid)
+            fibLabel3Stored := label.new(rightOffset, fibLevel3Price, str.tostring(fibLevel3, "#.###") + " | " + str.tostring(fibLevel3Price, "#.#####") + " $", color=color.new(color.blue, 70), textcolor=color.white, style=label.style_label_left)
+            fibLine2Stored := line.new(bar_index - 20, fibLevel2Price, rightOffset, fibLevel2Price, color=color.new(color.blue, 70), style=line.style_solid)
+            fibLabel2Stored := label.new(rightOffset, fibLevel2Price, str.tostring(fibLevel4, "#.###") + " | " + str.tostring(fibLevel2Price, "#.#####") + " $", color=color.new(color.blue, 70), textcolor=color.white, style=label.style_label_left)
+            fibLine1Stored := line.new(bar_index - 20, fibLevel1Price, rightOffset, fibLevel1Price, color=color.new(color.white, 70), style=line.style_solid)
+            fibLabel1Stored := label.new(rightOffset, fibLevel1Price, str.tostring(fibLevel5, "#.###") + " | " + str.tostring(fibLevel1Price, "#.#####") + " $", color=color.new(color.white, 70), textcolor=color.black, style=label.style_label_left)
+
+        fibBoxBetween50and618Stored := box.new(left=bar_index - 20, right=rightOffset, top=fibLevel3Price, bottom=fibLevel4Price, border_color=color.blue, bgcolor=color.new(color.blue, 70))
+        fibBoxBetween618and786Stored := box.new(left=bar_index - 20, right=rightOffset, top=fibLevel2Price, bottom=fibLevel3Price, border_color=color.blue, bgcolor=color.new(color.blue, 80))
+
+    lastFibHigh := fibHigh
+    lastFibLow := fibLow
+
+if array.size(allFVGs) > maxFVGDisplay
+    while array.size(allFVGs) > maxFVGDisplay
+        FVGWithBox oldestFVG = array.shift(allFVGs)
+        if not na(oldestFVG.box)
+            box.delete(oldestFVG.box)
+        if not na(oldestFVG.label)
+            label.delete(oldestFVG.label)
+
+if barstate.islastconfirmedhistory
+    if showFVG != lastShowFVG
+        if showFVG and array.size(allFVGs) > 0
+            for i = 0 to array.size(allFVGs) - 1
+                FVGWithBox fvgEntry = array.get(allFVGs, i)
+                fairValueGap fvg = fvgEntry.fvg
+                if not na(fvg)
+                    box fvgBox = na
+                    label fvgLabel = na
+                    if fvg.imbalanceType == "Standard"
+                        if fvg.bias == 1
+                            fvgBox := box.new(left=fvg.creationBarIndex, right=fvg.creationBarIndex + 20, top=fvg.top, bottom=fvg.bottom, border_color=color.blue, bgcolor=color.new(color.blue, 80))
+                            fvgLabel := label.new(fvg.creationBarIndex + 20, fvg.top, "Standard Bullish", color=color.new(color.blue, 70), textcolor=color.white, style=label.style_label_left)
+                        else
+                            fvgBox := box.new(left=fvg.creationBarIndex, right=fvg.creationBarIndex + 20, top=fvg.top, bottom=fvg.bottom, border_color=color.red, bgcolor=color.new(color.red, 80))
+                            fvgLabel := label.new(fvg.creationBarIndex + 20, fvg.top, "Standard Bearish", color=color.new(color.red, 70), textcolor=color.white, style=label.style_label_left)
+                    else if fvg.imbalanceType == "Consecutive"
+                        if fvg.bias == 1
+                            fvgBox := box.new(left=fvg.creationBarIndex, right=fvg.creationBarIndex + 20, top=fvg.top, bottom=fvg.bottom, border_color=color.purple, bgcolor=color.new(color.purple, 80))
+                            fvgLabel := label.new(fvg.creationBarIndex + 20, fvg.top, "Consecutive Bullish", color=color.new(color.purple, 70), textcolor=color.white, style=label.style_label_left)
+                        else
+                            fvgBox := box.new(left=fvg.creationBarIndex, right=fvg.creationBarIndex + 20, top=fvg.top, bottom=fvg.bottom, border_color=color.purple, bgcolor=color.new(color.purple, 80))
+                            fvgLabel := label.new(fvg.creationBarIndex + 20, fvg.top, "Consecutive Bearish", color=color.new(color.purple, 70), textcolor=color.white, style=label.style_label_left)
+                    else if fvg.imbalanceType == "Liquidity"
+                        if fvg.bias == 1
+                            fvgBox := box.new(left=fvg.creationBarIndex, right=fvg.creationBarIndex + 20, top=fvg.top, bottom=fvg.bottom, border_color=color.new(#006400, 0), bgcolor=color.new(#006400, 80))
+                            fvgLabel := label.new(fvg.creationBarIndex + 20, fvg.top, "Liquidity Bullish", color=color.new(#006400, 70), textcolor=color.white, style=label.style_label_left)
+                        else
+                            fvgBox := box.new(left=fvg.creationBarIndex, right=fvg.creationBarIndex + 20, top=fvg.top, bottom=fvg.bottom, border_color=color.new(#8B0000, 0), bgcolor=color.new(#8B0000, 80))
+                            fvgLabel := label.new(fvg.creationBarIndex + 20, fvg.top, "Liquidity Bearish", color=color.new(#8B0000, 70), textcolor=color.white, style=label.style_label_left)
+                    fvgEntry.box := fvgBox
+                    fvgEntry.label := fvgLabel
+                    array.set(allFVGs, i, fvgEntry)
+        else if array.size(allFVGs) > 0
+            for i = 0 to array.size(allFVGs) - 1
+                FVGWithBox fvgEntry = array.get(allFVGs, i)
+                if not na(fvgEntry.box)
+                    box.delete(fvgEntry.box)
+                    fvgEntry.box := na
+                if not na(fvgEntry.label)
+                    label.delete(fvgEntry.label)
+                    fvgEntry.label := na
+                array.set(allFVGs, i, fvgEntry)
+    lastShowFVG := showFVG
+
+bool bullishRebond = false
+bool bearishRebond = false
+if useSR
+    if srLongCondition and not na(closestLevelPrice) and isSupport
+        bullishRebond := true
+        lastRebondBar := bar_index
+        lastRebondDirection := 1
+    if srShortCondition and not na(closestLevelPrice) and not isSupport
+        bearishRebond := true
+        lastRebondBar := bar_index
+        lastRebondDirection := -1
+
+bool retestConfirmedLong = true
+bool retestConfirmedShort = true
+if useRetest
+    retestConfirmedLong := false
+    retestConfirmedShort := false
+
+    bool volumeConfirmationRetestBullish = volume > avgVolume * retestVolumeThreshold
+    bool volumeConfirmationRetestBearish = volume > avgVolume * retestVolumeThreshold
+
+    if lastBreakoutDirection == 1 and not na(lastBreakoutBar)
+        barsSinceBreakout = bar_index - lastBreakoutBar
+        float breakoutLevel = array.size(resistanceLevels) > 0 ? array.get(resistanceLevels, array.size(resistanceLevels) - 1) : na
+        if barsSinceBreakout <= retestLookback
+            retestTolerance = breakoutLevel * (retestProximity / 100)
+            if low <= breakoutLevel + retestTolerance and low >= breakoutLevel - retestTolerance and close > breakoutLevel
+                retestConfirmedLong := volumeConfirmationRetestBullish
+        else if barsSinceBreakout > retestTimeoutBars
+            retestConfirmedLong := true
+
+    if lastBreakoutDirection == -1 and not na(lastBreakoutBar)
+        barsSinceBreakout = bar_index - lastBreakoutBar
+        breakoutLevel = array.size(supportLevels) > 0 ? array.get(supportLevels, array.size(supportLevels) - 1) : na
+        if barsSinceBreakout <= retestLookback
+            retestTolerance = breakoutLevel * (retestProximity / 100)
+            if high >= breakoutLevel - retestTolerance and high <= breakoutLevel + retestTolerance and close < breakoutLevel
+                retestConfirmedShort := volumeConfirmationRetestBearish
+        else if barsSinceBreakout > retestTimeoutBars
+            retestConfirmedShort := true
+
+    if lastRebondDirection == 1 and not na(lastRebondBar)
+        barsSinceRebond = bar_index - lastRebondBar
+        if barsSinceRebond <= retestLookback
+            retestTolerance = closestLevelPrice * (retestProximity / 100)
+            if low <= closestLevelPrice + retestTolerance and low >= closestLevelPrice - retestTolerance and close > closestLevelPrice
+                retestConfirmedLong := volumeConfirmationRetestBullish
+        else if barsSinceRebond > retestTimeoutBars
+            retestConfirmedLong := true
+
+    if lastRebondDirection == -1 and not na(lastRebondBar)
+        barsSinceRebond = bar_index - lastRebondBar
+        if barsSinceRebond <= retestLookback
+            retestTolerance = closestLevelPrice * (retestProximity / 100)
+            if high >= closestLevelPrice - retestTolerance and high <= closestLevelPrice + retestTolerance and close < closestLevelPrice
+                retestConfirmedShort := volumeConfirmationRetestBearish
+        else if barsSinceRebond > retestTimeoutBars
+            retestConfirmedShort := true
+
+// AFFICHAGE DES ÉTIQUETTES
+if showCandlePatterns and candlePattern != "" and bar_index >= 4 and bar_index > 0 and array.size(tradesArray) == 0
+    string labelText = ""
+    string tooltipText = ""
+    color labelColor = na
+    string labelStyle = candleIsUp ? label.style_label_up : label.style_label_down
+    float labelPosition = candleIsUp ? low : high
+    if candlePattern == "Doji (Neutre)"
+        labelText := "Doji"
+        tooltipText := "Neutre"
+        labelColor := color.new(color.gray, 70)
+    else if candlePattern == "Bullish Engulfing"
+        labelText := "Bullish Engulfing"
+        tooltipText := "Possible renversement"
+        labelColor := color.new(color.green, 70)
+    else if candlePattern == "Bearish Engulfing"
+        labelText := "Bearish Engulfing"
+        tooltipText := "Possible renversement"
+        labelColor := color.new(color.red, 70)
+    else if candlePattern == "Hammer"
+        labelText := "Hammer"
+        tooltipText := "Possible rebond"
+        labelColor := color.new(color.green, 70)
+    else if candlePattern == "Inverted Hammer"
+        labelText := "Inverted Hammer"
+        tooltipText := "Possible rebond"
+        labelColor := color.new(color.green, 70)
+    else if candlePattern == "Pin Bar Bullish"
+        labelText := "Pin Bar Bullish"
+        tooltipText := "Possible rebond"
+        labelColor := color.new(color.green, 70)
+    else if candlePattern == "Shooting Star"
+        labelText := "Shooting Star"
+        tooltipText := "Possible correction"
+        labelColor := color.new(color.red, 70)
+    else if candlePattern == "Pin Bar Bearish"
+        labelText := "Pin Bar Bearish"
+        tooltipText := "Possible correction"
+        labelColor := color.new(color.red, 70)
+    else if candlePattern == "Marubozu Up"
+        labelText := "Marubozu Up"
+        tooltipText := "Tendance forte"
+        labelColor := color.new(color.green, 70)
+    else if candlePattern == "Marubozu Down"
+        labelText := "Marubozu Down"
+        tooltipText := "Tendance forte"
+        labelColor := color.new(color.red, 70)
+    newLabel = label.new(bar_index, labelPosition, labelText, color=labelColor, textcolor=color.white, style=labelStyle, size=size.normal, tooltip=tooltipText)
+    array.push(candlePatternLabels, newLabel)
+    if array.size(candlePatternLabels) > maxCandlePatternsDisplay
+        oldestLabel = array.shift(candlePatternLabels)
+        if not na(oldestLabel)
+            label.delete(oldestLabel)
+
+srSectionExecuted := true
+
+isNewBar := ta.change(time("1")) != 0
+
+var int pivotLookback = 20
+float pivotHigh = na
+float pivotLow = na
+int pivotHighBar = na
+int pivotLowBar = na
+if useSR or showSR
+    pivotHigh := ta.pivothigh(high, pivotLookback, pivotLookback)
+    pivotLow := ta.pivotlow(low, pivotLookback, pivotLookback)
+    pivotHighBar := not na(pivotHigh) ? bar_index - pivotLookback : na
+    pivotLowBar := not na(pivotLow) ? bar_index - pivotLookback : na
+
+var int testWindow = 50
+
+if not na(pivotHigh) and (useSR or showSR)
+    bool isNewLevel = true
+    float level = pivotHigh
+    float localTolerance = level * (proximity / 100)
+    if array.size(resistanceLevels) > 0
+        for i = 0 to array.size(resistanceLevels) - 1
+            existingLevel = array.get(resistanceLevels, i)
+            if math.abs(level - existingLevel) <= localTolerance
+                isNewLevel := false
+                break
+    if isNewLevel
+        int testCount = 0
+        for i = pivotLookback to 0 by 1
+            if not na(high[i]) and high[i] >= level - tolerance and high[i] <= level + tolerance and close[i] < level
+                testCount := testCount + 1
+        for i = 1 to testWindow
+            if not na(high[i]) and high[i] >= level - tolerance and high[i] <= level + tolerance and close[i] < level
+                testCount := testCount + 1
+        if testCount >= minSRTests
+            array.push(resistanceLevels, level)
+            array.push(resistanceBarIndices, pivotHighBar)
+            array.push(resistanceTestCounts, testCount)
+            if array.size(resistanceLevels) > 3
+                array.shift(resistanceLevels)
+                array.shift(resistanceBarIndices)
+                array.shift(resistanceTestCounts)
+
+if not na(pivotLow) and (useSR or showSR)
+    bool isNewLevel = true
+    float level = pivotLow
+    float localTolerance = level * (proximity / 100)
+    if array.size(supportLevels) > 0
+        for i = 0 to array.size(supportLevels) - 1
+            existingLevel = array.get(supportLevels, i)
+            if math.abs(level - existingLevel) <= localTolerance
+                isNewLevel := false
+                break
+    if isNewLevel
+        int testCount = 0
+        for i = pivotLookback to 0 by 1
+            if not na(low[i]) and low[i] >= level - tolerance and low[i] <= level + tolerance and close[i] > level
+                testCount := testCount + 1
+        for i = 1 to testWindow
+            if not na(low[i]) and low[i] >= level - tolerance and low[i] <= level + tolerance and close[i] > level
+                testCount := testCount + 1
+        if testCount >= minSRTests
+            array.push(supportLevels, level)
+            array.push(supportBarIndices, pivotLowBar)
+            array.push(supportTestCounts, testCount)
+            if array.size(supportLevels) > 3
+                array.shift(supportLevels)
+                array.shift(supportBarIndices)
+                array.shift(supportTestCounts)
+
+if array.size(resistanceLevels) > 0 and (useSR or showSR)
+    for i = 0 to array.size(resistanceLevels) - 1
+        float level = array.get(resistanceLevels, i)
+        float localTolerance = level * (proximity / 100)
+        if high >= level - localTolerance and high <= level + localTolerance and close < level
+            int currentTestCount = array.get(resistanceTestCounts, i)
+            array.set(resistanceTestCounts, i, currentTestCount + 1)
+
+if array.size(supportLevels) > 0 and (useSR or showSR)
+    for i = 0 to array.size(supportLevels) - 1
+        float level = array.get(supportLevels, i)
+        float localTolerance = level * (proximity / 100)
+        if low >= level - localTolerance and low <= level + localTolerance and close > level
+            int currentTestCount = array.get(supportTestCounts, i)
+            array.set(supportTestCounts, i, currentTestCount + 1)
+
+supportLevel := array.size(supportLevels) > 0 ? array.get(supportLevels, array.size(supportLevels) - 1) : na
+resistanceLevel := array.size(resistanceLevels) > 0 ? array.get(resistanceLevels, array.size(resistanceLevels) - 1) : na
+
+if array.size(supportLevels) > 0 and (useSR or showSR)
+    for i = array.size(supportLevels) - 1 to 0 by 1
+        if array.get(supportTestCounts, i) < minSRTests
+            array.remove(supportLevels, i)
+            array.remove(supportBarIndices, i)
+            array.remove(supportTestCounts, i)
+
+if array.size(resistanceLevels) > 0 and (useSR or showSR)
+    for i = array.size(resistanceLevels) - 1 to 0 by 1
+        if array.get(resistanceTestCounts, i) < minSRTests
+            array.remove(resistanceLevels, i)
+            array.remove(resistanceBarIndices, i)
+            array.remove(resistanceTestCounts, i)
+
+int rightBar = bar_index
+
+// Gestion des Order Blocks
+bool bullishOBAlert = false
+bool bearishOBAlert = false
+
+if bar_index > 0 and orderBlocks.size() > maxOBDisplay
+    while orderBlocks.size() > maxOBDisplay
+        orderBlock oldestOB = array.shift(orderBlocks)
+        if not na(oldestOB.box)
+            box.delete(oldestOB.box)
+
+if lastBullishBeforeDrop and (useOB or showOB) and (na(lastOBBar) or bar_index - lastOBBar >= minBarsBetweenOBs) and showOB and bar_index > 0 and array.size(tradesArray) == 0
+    int left = leftBarBullish  // Corrected from 'pungent' to 'left'
+    int right = rightBarBullish
+    if left > right
+        left := rightBarBullish
+        right := leftBarBullish
+    obBox = box.new(left=left, right=right, top=topOBBullish, bottom=bottomOBBullish, border_color=color.red, bgcolor=color.new(color.red, 80))
+    orderBlocks.push(orderBlock.new(topOBBullish, bottom=bottomOBBullish, bias=-1, box=obBox, barIndex=bar_index))
+    lastOBBar := bar_index
+    lastBullishOBDetected := true
+    lastBearishOBDetected := false
+    bullishOBAlert := true
+
+if lastBearishBeforeUp and (useOB or showOB) and (na(lastOBBar) or bar_index - lastOBBar >= minBarsBetweenOBs) and showOB and bar_index > 0 and array.size(tradesArray) == 0
+    int left = leftBarBearish
+    int right = rightBarBearish
+    if left > right
+        left := rightBarBearish
+        right := leftBarBearish
+    obBox = box.new(left=left, right=right, top=topOBBearish, bottom=bottomOBBearish, border_color=color.green, bgcolor=color.new(color.green, 80))
+    orderBlocks.push(orderBlock.new(topOBBearish, bottom=bottomOBBearish, bias=1, box=obBox, barIndex=bar_index))
+    lastOBBar := bar_index
+    lastBearishOBDetected := true
+    lastBullishOBDetected := false
+    bearishOBAlert := true
+
+if bar_index > 0 and orderBlocks.size() > maxOBDisplay
+    while orderBlocks.size() > maxOBDisplay
+        orderBlock oldestOB = array.shift(orderBlocks)
+        if not na(oldestOB.box)
+            box.delete(oldestOB.box)
+
+// Gestion des Supports/Résistances
+if showSR and bar_index >= 4
+    if array.size(supportLines) > 0
+        for i = 0 to array.size(supportLines) - 1
+            line.delete(array.get(supportLines, i))
+        for i = 0 to array.size(supportLabels) - 1
+            label.delete(array.get(supportLabels, i))
+    array.clear(supportLines)
+    array.clear(supportLabels)
+
+    if array.size(resistanceLines) > 0
+        for i = 0 to array.size(resistanceLines) - 1
+            line.delete(array.get(resistanceLines, i))
+    if array.size(resistanceLabels) > 0
+        for i = 0 to array.size(resistanceLabels) - 1
+            label.delete(array.get(resistanceLabels, i))
+    array.clear(resistanceLines)
+    array.clear(resistanceLabels)
+
+    if array.size(supportLevels) > 0
+        for i = 0 to array.size(supportLevels) - 1
+            if not na(array.get(supportLevels, i)) and not na(array.get(supportBarIndices, i))
+                startBar = array.get(supportBarIndices, i)
+                leftBar = startBar
+                if leftBar <= rightBar
+                    supportLine = line.new(leftBar, array.get(supportLevels, i), rightBar, array.get(supportLevels, i), color=color.new(color.red, 0), style=line.style_solid, width=1)
+                    supportLabel = label.new(rightBar, array.get(supportLevels, i), "Support: " + str.tostring(array.get(supportLevels, i), "#.##") + "$", color=color.new(color.red, 0), textcolor=color.white, style=label.style_label_left)
+                    array.push(supportLines, supportLine)
+                    array.push(supportLabels, supportLabel)
+
+    if array.size(resistanceLevels) > 0
+        for i = 0 to array.size(resistanceLevels) - 1
+            if not na(array.get(resistanceLevels, i)) and not na(array.get(resistanceBarIndices, i))
+                startBar = array.get(resistanceBarIndices, i)
+                leftBar = startBar
+                if leftBar <= rightBar
+                    resistanceLine = line.new(leftBar, array.get(resistanceLevels, i), rightBar, array.get(resistanceLevels, i), color=color.new(color.green, 0), style=line.style_solid, width=1)
+                    resistanceLabel = label.new(rightBar, array.get(resistanceLevels, i), "Résistance: " + str.tostring(array.get(resistanceLevels, i), "#.##") + "$", color=color.new(color.green, 0), textcolor=color.white, style=label.style_label_left)
+                    array.push(resistanceLines, resistanceLine)
+                    array.push(resistanceLabels, resistanceLabel)
+
+// DÉFINITION DES PROPRIÉTÉS DES INDICATEURS
+if array.size(indicatorPropsArray) == 0
+    array.push(indicatorPropsArray, IndicatorProps.new("SMA Long Terme", color.new(#FFD700, 70), #000000, "Tendance "))
+    array.push(indicatorPropsArray, IndicatorProps.new("SuperTrend", color.new(#FFD700, 70), #000000, "Tendance "))
+    array.push(indicatorPropsArray, IndicatorProps.new("OBV", color.new(#FFFF00, 70), #000000, "Signal "))
+    array.push(indicatorPropsArray, IndicatorProps.new("Squeeze", color.new(#00FF00, 70), #000000, "Squeeze "))
+    array.push(indicatorPropsArray, IndicatorProps.new("Candle", color.new(#FF00FF, 70), #FFFFFF, "Motif "))
+    array.push(indicatorPropsArray, IndicatorProps.new("FVG", color.new(#089981, 70), #FFFFFF, "Taille: "))
+    array.push(indicatorPropsArray, IndicatorProps.new("Fibonacci", color.new(#800000, 70), #FFFFFF, "Fibonacci "))
+    array.push(indicatorPropsArray, IndicatorProps.new("S/R", color.new(#089981, 70), #FFFFFF, "Support: "))
+    array.push(indicatorPropsArray, IndicatorProps.new("Breakout", color.new(#FF4500, 70), #FFFFFF, "Breakout: "))
+    array.push(indicatorPropsArray, IndicatorProps.new("OB", color.new(#F23645, 70), #FFFFFF, "Haut: "))
+
+bool longTermTrendUp = useLongTermSMA ? close > longTermSMA : true
+bool longTermTrendDown = useLongTermSMA ? close < longTermSMA : true
+bool sufficientVolatility = currentATR > volatilityThreshold * atrAverage
+
+bool canGenerateLong = true
+bool canGenerateShort = true
+if useRetest
+    if not na(lastBreakoutBar)
+        barsSinceBreakout = bar_index - lastBreakoutBar
+        if barsSinceBreakout < retestTimeoutBars
+            if lastBreakoutDirection == 1
+                canGenerateShort := false
+            else if lastBreakoutDirection == -1
+                canGenerateLong := false
+
+    if not na(lastRebondBar)
+        barsSinceRebond = bar_index - lastRebondBar
+        if barsSinceRebond < retestTimeoutBars
+            if lastRebondDirection == 1
+                canGenerateShort := false
+            else if lastRebondDirection == -1
+                canGenerateLong := false
+
+// Validation des trades par catégorie
+bool sufficientIndicatorsAlignedLong = trendCountLong >= trendThreshold and momentumCountLong >= momentumThreshold and volumeCountLong >= volumeThresholdCategory
+bool sufficientIndicatorsAlignedShort = trendCountShort >= trendThreshold and momentumCountShort >= momentumThreshold and volumeCountShort >= volumeThresholdCategory
+
+long_condition = longTermTrendUp and sufficientVolatility and sufficientVolume and sufficientIndicatorsAlignedLong and (bullishBreakout or not useBreakout) and canGenerateLong and (retestConfirmedLong or not useRetest) and mtfTrendUp and not inRange and fibLongCondition
+short_condition = longTermTrendDown and sufficientVolatility and sufficientVolume and sufficientIndicatorsAlignedShort and (bearishBreakout or not useBreakout) and canGenerateShort and (retestConfirmedShort or not useRetest) and mtfTrendDown and not inRange and fibShortCondition
+
+if long_condition
+    lastSignalBar := bar_index
+    lastSignalDirection := 1
+else if short_condition
+    lastSignalBar := bar_index
+    lastSignalDirection := -1
+
+if isFirstBar
+    currentDay := dayofmonth(time)
+    dailyPnL := 0.0
+    dailyLossLimitReached := false
+
+if dayofmonth(time) != currentDay
+    currentDay := dayofmonth(time)
+    dailyPnL := 0.0
+    dailyLossLimitReached := false
+    dailyProfitLimitReached := false
+
+if strategy.position_size != 0
+    float entryPrice = strategy.position_avg_price
+    float currentPrice = close
+    float positionPnL = strategy.position_size * (currentPrice - entryPrice) / inputCapital * 100
+    dailyPnL := positionPnL
+else if strategy.closedtrades > 0
+    float closedPnL = strategy.netprofit / inputCapital * 100
+    dailyPnL := closedPnL
+
+if useMaxDailyLoss and dailyPnL <= -maxDailyLossPercent
+    dailyLossLimitReached := true
+if useMaxDailyProfit and dailyPnL >= maxDailyProfitPercent
+    dailyProfitLimitReached := true
+
+bool isWithinTradingHours = trade24h ? true : (hour > start_hour or (hour == start_hour and minute >= start_minute)) and (hour < end_hour or (hour == end_hour and minute <= end_minute))
+canTrade := isWithinTradingHours and not dailyLossLimitReached and not dailyProfitLimitReached
+
+// Long trade entry
+if long_condition and bar_index > 0 and array.size(tradesArray) == 0 and canTrade
+    openTrades("Long", close, trade_pips)
+    // Mettre à jour les métriques de backtest
+    if enableBacktest
+        backtestTradeCount := backtestTradeCount + numtrade
+    isFirstTrade := false
+
+// Short trade entry
+if short_condition and bar_index > 0 and array.size(tradesArray) == 0 and canTrade
+    openTrades("Short", close, trade_pips)
+    // Mettre à jour les métriques de backtest
+    if enableBacktest
+        backtestTradeCount := backtestTradeCount + numtrade
+    isFirstTrade := false
+
+// Track if there were trades in the previous bar
+var bool wasInTrade = false
+
+// Check if we just entered a trade (no trades before, but trades now)
+bool justEnteredTrade = array.size(tradesArray) > 0 and not wasInTrade
+
+if not barstate.isfirst and bar_index > 0 and justEnteredTrade
+    // Clear support lines and labels
+    if array.size(supportLines) > 0 and showSR
+        for i = 0 to array.size(supportLines) - 1
+            line.delete(array.get(supportLines, i))
+            label.delete(array.get(supportLabels, i))
+    if array.size(resistanceLines) > 0 and showSR
+        for i = 0 to array.size(resistanceLines) - 1
+            line.delete(array.get(resistanceLines, i))
+            label.delete(array.get(resistanceLabels, i))
+    array.clear(supportLines)
+    array.clear(supportLabels)
+    array.clear(resistanceLines)
+    array.clear(resistanceLabels)
+
+    // Clear FVG visuals
+    if showFVG and array.size(allFVGs) > 0
+        for i = 0 to array.size(allFVGs) - 1
+            FVGWithBox fvgEntry = array.get(allFVGs, i)
+            if not na(fvgEntry.box)
+                box.delete(fvgEntry.box)
+                fvgEntry.box := na
+            if not na(fvgEntry.label)
+                label.delete(fvgEntry.label)
+                fvgEntry.label := na
+            array.set(allFVGs, i, fvgEntry)
+
+    // Clear Order Block visuals
+    if showOB and orderBlocks.size() > 0
+        for i = 0 to orderBlocks.size() - 1
+            orderBlock ob = orderBlocks.get(i)
+            if not na(ob.box)
+                box.delete(ob.box)
+        array.clear(orderBlocks)
+
+    // Clear Candlestick Pattern visuals
+    if showCandlePatterns and array.size(candlePatternLabels) > 0
+        for i = 0 to array.size(candlePatternLabels) - 1
+            label labelToDelete = array.get(candlePatternLabels, i)
+            if not na(labelToDelete)
+                label.delete(labelToDelete)
+        array.clear(candlePatternLabels)
+
+    // Clear Fibonacci visuals
+    if showFibonacci
+        if not na(fibLine1Stored)
+            line.delete(fibLine1Stored)
+            label.delete(fibLabel1Stored)
+            line.delete(fibLine2Stored)
+            label.delete(fibLabel2Stored)
+            line.delete(fibLine3Stored)
+            label.delete(fibLabel3Stored)
+            line.delete(fibLine4Stored)
+            label.delete(fibLabel4Stored)
+            line.delete(fibLine5Stored)
+            label.delete(fibLabel5Stored)
+            box.delete(fibBoxBetween50and618Stored)
+            box.delete(fibBoxBetween618and786Stored)
+        fibLine1Stored := na
+        fibLabel1Stored := na
+        fibLine2Stored := na
+        fibLabel2Stored := na
+        fibLine3Stored := na
+        fibLabel3Stored := na
+        fibLine4Stored := na
+        fibLabel4Stored := na
+        fibLine5Stored := na
+        fibLabel5Stored := na
+        fibBoxBetween50and618Stored := na
+        fibBoxBetween618and786Stored := na
+
+    // Clear indicator table if needed
+    if indicatorTableDisplay == "Effacer à l'ouverture d'un trade"
+        if not na(mainTable)
+            table.delete(mainTable)
+        mainTable := na
+
+// Update wasInTrade for the next bar
+wasInTrade := array.size(tradesArray) > 0
+
+// Gestion de la clôture des trades
+if bar_index > 0 and array.size(tradesArray) > 0
+    float positionPnL = 0.0
+    bool slHitForAnyTrade = false
+    float portionToClose = numtrade == 1 ? 1.0 : numtrade == 2 ? 0.5 : 0.333
+    float slClosePrice = na  // Variable temporaire pour stocker le prix du SL
+    // Étape 1 : Vérifier si un SL est touché
+    for i = 0 to array.size(tradesArray) - 1
+        Trade trade = array.get(tradesArray, i)
+        if trade.active
+            bool isLong = trade.is_long
+            bool slHit = isLong ? low <= trade.sl : high >= trade.sl
+            if slHit
+                slHitForAnyTrade := true
+                slClosePrice := trade.sl  // Stocker le prix du SL
+                break
+    // Étape 2 : Si un SL est touché, clôturer tous les trades
+    if slHitForAnyTrade
+        for i = 0 to array.size(tradesArray) - 1
+            Trade trade = array.get(tradesArray, i)
+            if trade.active
+                float closePrice = trade.sl
+                float qtyToClose = trade.remaining_lot_size
+                strategy.close(trade.id, qty=qtyToClose, comment="SL Hit - Position Closed at " + str.tostring(closePrice, "#.##"))
+                array.set(tradesArray, i, trade)
+        positionPnL := updatePnL(tradesArray, slClosePrice, true)  // Utiliser slClosePrice au lieu de trade.sl
+    // Étape 3 : Si aucun SL touché, vérifier les TP
+    else
+        for i = 0 to array.size(tradesArray) - 1
+            Trade trade = array.get(tradesArray, i)
+            if trade.active
+                bool isLong = trade.is_long
+                bool tp1Hit = not trade.tp1_hit and (isLong ? high >= trade.tp1 : low <= trade.tp1)
+                bool tp2Hit = not trade.tp2_hit and not na(trade.tp2) and (isLong ? high >= trade.tp2 : low <= trade.tp2)
+                bool tp3Hit = not trade.tp3_hit and not na(trade.tp3) and (isLong ? high >= trade.tp3 : low <= trade.tp3)
+                float closePrice = na
+                float expectedLevel = na
+                string closeType = ""
+                float qtyToClose = 0.0
+                bool shouldCloseTrade = false
+                if tp1Hit
+                    closeType := "TP1 Hit"
+                    expectedLevel := trade.tp1
+                    closePrice := trade.tp1
+                    trade.tp1_hit := true
+                    qtyToClose := numtrade == 1 or i == 0 ? trade.remaining_lot_size : trade.remaining_lot_size * portionToClose
+                    qtyToClose := math.round(qtyToClose, 2)
+                    if numtrade == 1 or (i == 0 and (numtrade == 2 or numtrade == 3))
+                        trade.active := false
+                        shouldCloseTrade := true
+                        // Ajuster SL des trades restants à l'entrée (breakeven)
+                        if numtrade > 1
+                            for j = 1 to array.size(tradesArray) - 1
+                                Trade otherTrade = array.get(tradesArray, j)
+                                if otherTrade.active
+                                    otherTrade.sl := otherTrade.entry_price
+                                    strategy.exit("SL " + otherTrade.id, otherTrade.id, stop=otherTrade.sl, qty=otherTrade.remaining_lot_size)
+                                    array.set(tradesArray, j, otherTrade)
+                    if not na(trade.tp1_box)
+                        box.delete(trade.tp1_box)
+                    trade.tp1_box := na
+                else if tp2Hit
+                    closeType := "TP2 Hit"
+                    expectedLevel := trade.tp2
+                    closePrice := trade.tp2
+                    trade.tp2_hit := true
+                    qtyToClose := trade.remaining_lot_size
+                    trade.active := false
+                    shouldCloseTrade := true
+                    if numtrade == 3 and i == 1 and array.size(tradesArray) > 2
+                        Trade trade3 = array.get(tradesArray, 2)
+                        if trade3.active
+                            trade3.sl := trade3.tp1
+                            strategy.exit("SL " + trade3.id, trade3.id, stop=trade3.sl, qty=trade3.remaining_lot_size)
+                            array.set(tradesArray, 2, trade3)
+                    if not na(trade.tp2_box)
+                        box.delete(trade.tp2_box)
+                    trade.tp2_box := na
+                else if tp3Hit
+                    closeType := "TP3 Hit"
+                    expectedLevel := trade.tp3
+                    closePrice := trade.tp3
+                    trade.tp3_hit := true
+                    qtyToClose := trade.remaining_lot_size
+                    trade.active := false
+                    shouldCloseTrade := true
+                if qtyToClose > 0
+                    strategy.close(trade.id, qty=qtyToClose, comment=closeType + " at " + str.tostring(closePrice, "#.##"))
+                    float tradePnL = isLong ? (expectedLevel - trade.entry_price) * qtyToClose : (trade.entry_price - expectedLevel) * qtyToClose
+                    positionPnL := positionPnL + tradePnL
+                    trade.remaining_lot_size := math.max(0, trade.remaining_lot_size - qtyToClose)
+                if shouldCloseTrade
+                    if not na(trade.entry_line)
+                        line.delete(trade.entry_line)
+                    if not na(trade.sl_line)
+                        line.delete(trade.sl_line)
+                    if not na(trade.tp1_line)
+                        line.delete(trade.tp1_line)
+                    if not na(trade.tp2_line)
+                        line.delete(trade.tp2_line)
+                    if not na(trade.tp3_line)
+                        line.delete(trade.tp3_line)
+                    if not na(trade.sl_box)
+                        box.delete(trade.sl_box)
+                    if not na(trade.tp1_box)
+                        box.delete(trade.tp1_box)
+                    if not na(trade.tp2_box)
+                        box.delete(trade.tp2_box)
+                    if not na(trade.tp3_box)
+                        box.delete(trade.tp3_box)
+                    if not na(trade.entry_label)
+                        label.delete(trade.entry_label)
+                    if not na(trade.sl_label)
+                        label.delete(trade.sl_label)
+                    if not na(trade.tp1_label)
+                        label.delete(trade.tp1_label)
+                    if not na(trade.tp2_label)
+                        label.delete(trade.tp2_label)
+                    if not na(trade.tp3_label)
+                        label.delete(trade.tp3_label)
+                    array.push(closedTradesArray, trade)
+                    if array.size(closedTradesArray) > 3
+                        array.shift(closedTradesArray)
+                array.set(tradesArray, i, trade)
+    // Supprimer les trades inactifs
+    for i = array.size(tradesArray) - 1 to 0 by 1
+        Trade trade = array.get(tradesArray, i)
+        if not trade.active
+            array.remove(tradesArray, i)
+    // Mettre à jour in_trade
+    in_trade := array.size(tradesArray) > 0
+    // Mettre à jour cumulativePnL et les métriques de backtest
+    if array.size(tradesArray) == 0 and positionPnL != 0.0
+        cumulativePnL := cumulativePnL + positionPnL
+        if enableBacktest
+            if positionPnL > 0
+                winningTrades := winningTrades + 1
+            else if positionPnL < 0
+                losingTrades := losingTrades + 1
+            else
+                tradesBreakEven := tradesBreakEven + 1
+            tradeDuration = array.size(closedTradesArray) > 0 ? bar_index - array.get(closedTradesArray, array.size(closedTradesArray) - 1).start_bar : 0
+            backtestTotalTradeDuration := backtestTotalTradeDuration + tradeDuration
+            backtestAverageTradeDuration := backtestTradeCount > 0 ? backtestTotalTradeDuration / backtestTradeCount : 0.0
+
+// Gestion des trades hors horaires ou limites quotidiennes
+if not canTrade and bar_index > 0 and array.size(tradesArray) > 0
+    strategy.close_all(comment="Trading Hours Ended or Daily Limit Reached")
+    float positionPnL = updatePnL(tradesArray, close, false)
+    // Mettre à jour cumulativePnL et les métriques de backtest
+    if positionPnL != 0.0
+        cumulativePnL := cumulativePnL + positionPnL
+        if enableBacktest
+            if positionPnL > 0
+                winningTrades := winningTrades + 1
+            else if positionPnL < 0
+                losingTrades := losingTrades + 1
+            else
+                tradesBreakEven := tradesBreakEven + 1
+            tradeDuration = array.size(closedTradesArray) > 0 ? bar_index - array.get(closedTradesArray, array.size(closedTradesArray) - 1).start_bar : 0
+            backtestTotalTradeDuration := backtestTotalTradeDuration + tradeDuration
+            backtestAverageTradeDuration := backtestTradeCount > 0 ? backtestTotalTradeDuration / backtestTradeCount : 0.0
+    array.clear(tradesArray)
+    in_trade := false
+
+// Update trade visuals
+if bar_index > 0 and array.size(tradesArray) > 0
+    for i = 0 to array.size(tradesArray) - 1
+        Trade trade = array.get(tradesArray, i)
+        // Dessiner de nouveaux visuels uniquement si le trade est actif
+        if trade.active
+            color tpColor = color.green
+            // Créer les visuels uniquement s'ils n'existent pas déjà
+            trade.entry_line := na(trade.entry_line) ? line.new(trade.start_bar, trade.entry_price, bar_index + 1, trade.entry_price, color=color.blue, style=line.style_solid) : trade.entry_line
+            trade.sl_line := na(trade.sl_line) ? line.new(trade.start_bar, trade.sl, bar_index + 1, trade.sl, color=color.red, style=line.style_solid) : trade.sl_line
+            trade.tp1_line := na(trade.tp1_line) ? line.new(trade.start_bar, trade.tp1, bar_index + 1, trade.tp1, color=tpColor, style=line.style_solid) : trade.tp1_line
+            trade.tp2_line := na(trade.tp2_line) and not na(trade.tp2) ? line.new(trade.start_bar, trade.tp2, bar_index + 1, trade.tp2, color=tpColor, style=line.style_dashed) : trade.tp2_line
+            trade.tp3_line := na(trade.tp3_line) and not na(trade.tp3) ? line.new(trade.start_bar, trade.tp3, bar_index + 1, trade.tp3, color=tpColor, style=line.style_dotted) : trade.tp3_line
+            trade.sl_box := na(trade.sl_box) ? box.new(left=trade.start_bar, right=bar_index + 1, top=trade.entry_price, bottom=trade.sl, border_color=color.red, bgcolor=color.new(color.red, 70)) : trade.sl_box
+            trade.tp1_label := not trade.tp1_hit and na(trade.tp1_label) ? label.new(bar_index + 1, trade.tp1, "TP1 : " + str.tostring(trade.tp1, "#.##") + " $", color=color.new(color.white, 5), textcolor=tpColor, style=label.style_label_left, size=size.small) : trade.tp1_label
+            trade.tp2_label := not na(trade.tp2) and not trade.tp2_hit and na(trade.tp2_label) ? label.new(bar_index + 1, trade.tp2, "TP2 : " + str.tostring(trade.tp2, "#.##") + " $", color=color.new(color.white, 5), textcolor=tpColor, style=label.style_label_left, size=size.small) : trade.tp2_label
+            trade.tp3_label := not na(trade.tp3) and na(trade.tp3_label) ? label.new(bar_index + 1, trade.tp3, "TP3 : " + str.tostring(trade.tp3, "#.##") + " $", color=color.new(color.white, 5), textcolor=tpColor, style=label.style_label_left, size=size.small) : trade.tp3_label
+            // Lier l'affichage des box à l'existence des étiquettes
+            trade.tp1_box := not na(trade.tp1_label) and na(trade.tp1_box) ? box.new(left=trade.start_bar, right=bar_index + 1, top=trade.entry_price, bottom=trade.tp1, border_color=tpColor, bgcolor=color.new(tpColor, 70)) : trade.tp1_box
+            trade.tp2_box := not na(trade.tp2_label) and na(trade.tp2_box) ? box.new(left=trade.start_bar, right=bar_index + 1, top=trade.entry_price, bottom=trade.tp2, border_color=tpColor, bgcolor=color.new(tpColor, 70)) : trade.tp2_box
+            trade.tp3_box := not na(trade.tp3_label) and na(trade.tp3_box) ? box.new(left=trade.start_bar, right=bar_index + 1, top=trade.entry_price, bottom=trade.tp3, border_color=tpColor, bgcolor=color.new(tpColor, 70)) : trade.tp3_box
+            trade.entry_label := na(trade.entry_label) ? label.new(bar_index + 1, trade.entry_price, "Entrée : " + str.tostring(trade.entry_price, "#.##") + " $", color=color.new(color.white, 5), textcolor=color.blue, style=label.style_label_left, size=size.small) : trade.entry_label
+            trade.sl_label := na(trade.sl_label) ? label.new(bar_index + 1, trade.sl, "SL : " + str.tostring(trade.sl, "#.##") + " $", color=color.new(color.white, 5), textcolor=color.red, style=label.style_label_left, size=size.small) : trade.sl_label
+            array.set(tradesArray, i, trade)
+
+// Structure pour représenter les données d'affichage d'un trade (TP ou SL)
+type TradeDisplayData
+    string type  // "TP" ou "SL"
+    int index    // 1, 2 ou 3 (pour TP1, TP2, TP3 ou SL1, SL2, SL3)
+    float pips   // Nombre de pips
+    float level  // Niveau de prix
+    float risk   // Risque en %
+    float lot    // Taille du lot
+    float pnl    // Gain/Perte
+    string status  // "En cours", "Touché", "Neutralisé", "Clôturé"
+
+// Trade Summary Table
+var table tradeSummaryTable = na
+var int lastActiveTradeCount = 0
+var int lastClosedTradeCount = 0
+var bool stateChanged = false
+var float cumulativePnLForPosition = 0.0  // Track PnL for the current position
+
+if bar_index > 0
+    // Calculate current trade state
+    int currentActiveTradeCount = array.size(tradesArray)
+    int currentClosedTradeCount = array.size(closedTradesArray)
+
+    // Detect state change
+    stateChanged := currentActiveTradeCount != lastActiveTradeCount or currentClosedTradeCount != lastClosedTradeCount
+
+    // Reset cumulativePnLForPosition when a new position is opened
+    if currentActiveTradeCount > 0 and lastActiveTradeCount == 0
+        cumulativePnLForPosition := 0.0
+
+    // Update state counters
+    lastActiveTradeCount := currentActiveTradeCount
+    lastClosedTradeCount := currentClosedTradeCount
+
+    // Update table only on state change
+    if stateChanged
+        if not na(tradeSummaryTable)
+            table.delete(tradeSummaryTable)
+
+        bool hasActiveTrades = false
+        if array.size(tradesArray) > 0
+            for i = 0 to array.size(tradesArray) - 1
+                Trade trade = array.get(tradesArray, i)
+                if trade.active
+                    hasActiveTrades := true
+                    break
+
+        // Display table if there are active or closed trades
+        if array.size(tradesArray) > 0 or array.size(closedTradesArray) > 0
+            Trade[] displayTrades = array.size(tradesArray) > 0 ? tradesArray : closedTradesArray
+            if array.size(displayTrades) == 0
+                tradeSummaryTable := na
+            else
+                // Initialize trade data
+                Trade firstTrade = array.get(displayTrades, 0)
+                bool isLong = firstTrade.is_long
+                float entryPrice = firstTrade.entry_price
+                float lotSize = firstTrade.lot_size
+                float displayedCapital = inputCapital + cumulativePnLForPosition
+
+                // Calculate lot size if not defined
+                if na(lotSize) or lotSize <= 0
+                    float capitalToUse = isFirstTrade ? inputCapital : displayedCapital
+                    float riskPercent = risque_par_trade / 100
+                    float totalRiskAmount = capitalToUse * riskPercent
+                    lotSize := totalRiskAmount / (trade_pips * valeur_pips)
+                    lotSize := math.ceil(lotSize * 100) / 100
+                    if na(lotSize) or lotSize <= 0
+                        lotSize := 0.01
+
+                // Initialize arrays for TP and SL data
+                float[] tpLevels = array.new_float(numtrade, na)
+                float[] slLevels = array.new_float(numtrade, entryPrice + (isLong ? -trade_pips : trade_pips))
+                string[] tpStatuses = array.new_string(numtrade, "En cours")
+                string[] slStatuses = array.new_string(numtrade, "En cours")
+                float[] tpPips = array.new_float(numtrade, na)
+                float[] slPips = array.new_float(numtrade, trade_pips)
+                float[] tpPnLs = array.new_float(numtrade, 0.0)
+                float[] slPnLs = array.new_float(numtrade, 0.0)
+
+                // Set initial TP levels
+                for i = 0 to numtrade - 1
+                    float multiplier = i == 0 ? 1.0 : i == 1 ? 2.0 : 3.0
+                    float tpDistance = trade_pips * multiplier
+                    array.set(tpLevels, i, entryPrice + (isLong ? tpDistance : -tpDistance))
+                    array.set(tpPips, i, tpDistance)
+                    array.set(tpPnLs, i, tpDistance * lotSize * valeur_pips)
+                    array.set(slPnLs, i, -trade_pips * lotSize * valeur_pips)
+
+                // Check trade events
+                bool slHitBeforeTP = false
+                bool anyTpHit = false
+                bool tp1Hit = array.size(displayTrades) >= 1 ? array.get(displayTrades, 0).tp1_hit : false
+                bool tp2Hit = array.size(displayTrades) >= 2 ? array.get(displayTrades, 1).tp2_hit : false
+                bool tp3Hit = array.size(displayTrades) >= 3 ? array.get(displayTrades, 2).tp3_hit : false
+
+                if not hasActiveTrades and array.size(closedTradesArray) > 0
+                    for i = 0 to array.size(closedTradesArray) - 1
+                        Trade trade = array.get(closedTradesArray, i)
+                        if not trade.tp1_hit and not trade.tp2_hit and not trade.tp3_hit
+                            slHitBeforeTP := true
+                            break
+                        if trade.tp1_hit or trade.tp2_hit or trade.tp3_hit
+                            anyTpHit := true
+
+                // Adjust levels and statuses based on events
+                if slHitBeforeTP
+                    for i = 0 to numtrade - 1
+                        array.set(tpStatuses, i, "Non atteint")
+                        array.set(slStatuses, i, "Touché")
+                else if hasActiveTrades
+                    if numtrade >= 1 and tp1Hit
+                        array.set(tpStatuses, 0, "Touché")
+                        array.set(slStatuses, 0, "Neutralisé")
+                        array.set(slLevels, 0, entryPrice)
+                        array.set(slPips, 0, 0.0)
+                        array.set(slPnLs, 0, 0.0)
+                    if numtrade >= 2 and tp1Hit
+                        array.set(slLevels, 1, entryPrice)
+                        array.set(slPips, 1, 0.0)
+                        array.set(slPnLs, 1, 0.0)
+                        array.set(slStatuses, 1, "Neutralisé")
+                    if numtrade == 3 and tp1Hit
+                        array.set(slLevels, 2, entryPrice)
+                        array.set(slPips, 2, 0.0)
+                        array.set(slPnLs, 2, 0.0)
+                        array.set(slStatuses, 2, "Neutralisé")
+                    if numtrade >= 2 and tp2Hit
+                        array.set(tpStatuses, 1, "Touché")
+                        array.set(slStatuses, 1, "Non atteint")
+                    if numtrade == 3 and tp2Hit
+                        array.set(slLevels, 2, array.get(tpLevels, 0))
+                        array.set(slPips, 2, math.abs(array.get(tpLevels, 0) - entryPrice) / valeur_pips)
+                        array.set(slPnLs, 2, (isLong ? 1 : -1) * array.get(slPips, 2) * lotSize * valeur_pips)
+                        array.set(slStatuses, 2, "Neutralisé")
+                    if numtrade == 3 and tp3Hit
+                        array.set(tpStatuses, 2, "Touché")
+                        array.set(slStatuses, 2, "Non atteint")
+
+                // Populate TradeDisplayData arrays
+                TradeDisplayData[] tpData = array.new<TradeDisplayData>(numtrade, na)
+                TradeDisplayData[] slData = array.new<TradeDisplayData>(numtrade, na)
+                for i = 0 to numtrade - 1
+                    float tpLevel = array.get(tpLevels, i)
+                    float slLevel = array.get(slLevels, i)
+                    string tpStatus = array.get(tpStatuses, i)
+                    string slStatus = array.get(slStatuses, i)
+                    float tpPip = array.get(tpPips, i)
+                    float slPip = array.get(slPips, i)
+                    float tpPnLVal = array.get(tpPnLs, i)
+                    float slPnLVal = array.get(slPnLs, i)
+                    TradeDisplayData tpEntry = TradeDisplayData.new("TP", i + 1, tpPip, tpLevel, risque_par_trade, lotSize, tpPnLVal, tpStatus)
+                    TradeDisplayData slEntry = slStatus == "Neutralisé" and i == 1 ? TradeDisplayData.new("SL", i + 1, na, slLevel, na, na, na, slStatus) : TradeDisplayData.new("SL", i + 1, slPip, slLevel, risque_par_trade, lotSize, slPnLVal, slStatus)
+                    array.set(tpData, i, tpEntry)
+                    array.set(slData, i, slEntry)
+
+                // Calculate totals
+                string totalPipsDisplay = "En cours"
+                string totalLevelDisplay = "En cours"
+                string totalRiskDisplay = "En cours"
+                string totalLotDisplay = "En cours"
+                string totalPnLDisplay = "En cours"
+                float totalPips = 0.0
+                float totalPnL = 0.0
+                float totalLot = 0.0
+                int slCount = 0
+                int tpCount = 0
+                float lastExitLevel = na
+
+                if not hasActiveTrades and array.size(closedTradesArray) > 0
+                    bool slHitForAnyTrade = false
+                    slCount := 0
+                    tpCount := 0
+                    for i = 0 to array.size(closedTradesArray) - 1
+                        Trade trade = array.get(closedTradesArray, i)
+                        if not trade.tp1_hit and not trade.tp2_hit and not trade.tp3_hit
+                            slHitForAnyTrade := true
+                            slCount := slCount + 1
+                        else
+                            if trade.tp3_hit
+                                tpCount := tpCount + 1
+                                totalPips := trade_pips * 3
+                            else if trade.tp2_hit
+                                tpCount := tpCount + 1
+                                totalPips := trade_pips * 2
+                            else if trade.tp1_hit
+                                tpCount := tpCount + 1
+                                totalPips := trade_pips
+                        if i == array.size(closedTradesArray) - 1
+                            if trade.tp3_hit
+                                lastExitLevel := trade.tp3
+                            else if trade.tp2_hit
+                                lastExitLevel := trade.tp2
+                            else if trade.tp1_hit
+                                lastExitLevel := trade.tp1
+                            else
+                                lastExitLevel := trade.sl
+
+                    if slHitForAnyTrade
+                        totalPips := -trade_pips
+
+                    totalPips := isLong ? totalPips : -totalPips
+                    string sign = totalPips >= 0 ? "+" : "-"
+                    totalPipsDisplay := sign + str.tostring(math.round(math.abs(totalPips)), "#") + " pips"
+
+                    totalLevelDisplay := not na(lastExitLevel) ? str.tostring(lastExitLevel, "#.##") + " $" : "-"
+
+                    totalRiskDisplay := slHitForAnyTrade ? "R-1" : "R+" + str.tostring(tpCount)
+
+                    totalLot := slHitForAnyTrade ? lotSize * slCount : lotSize * tpCount
+                    totalLotDisplay := str.tostring(totalLot, "#.##")
+
+                    float cumulativePnLForDisplay = 0.0
+                    for i = 0 to numtrade - 1
+                        TradeDisplayData tpEntry = array.get(tpData, i)
+                        TradeDisplayData slEntry = array.get(slData, i)
+                        if tpEntry.status == "Touché"
+                            cumulativePnLForDisplay := cumulativePnLForDisplay + tpEntry.pnl
+                            totalPnL := totalPnL + tpEntry.pnl
+                        if slEntry.status == "Touché"
+                            cumulativePnLForDisplay := cumulativePnLForDisplay + slEntry.pnl
+                            totalPnL := totalPnL + slEntry.pnl
+                    totalPnLDisplay := str.tostring(totalPnL, "#.##") + " $"
+
+                    // Update cumulativePnLForPosition and displayedCapital
+                    cumulativePnLForPosition := cumulativePnLForDisplay
+                    displayedCapital := inputCapital + cumulativePnLForPosition
+
+                // Create the table
+                int numColumns = 2 + numtrade + numtrade
+                tradeSummaryTable := table.new(position.bottom_right, numColumns, 7, border_width=1, border_color=color.white, frame_color=color.white, frame_width=2)
+
+                // Headers
+                table.cell(tradeSummaryTable, 0, 0, str.tostring(displayedCapital, "#.##") + " $", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+                for i = 0 to numtrade - 1
+                    table.cell(tradeSummaryTable, i + 1, 0, "TP" + str.tostring(i + 1), bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                    table.cell(tradeSummaryTable, i + 1 + numtrade, 0, "SL" + str.tostring(i + 1), bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                table.cell(tradeSummaryTable, numColumns - 1, 0, "Totaux", bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
+
+                // Row "Pips"
+                table.cell(tradeSummaryTable, 0, 1, "Pips", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+                for i = 0 to numtrade - 1
+                    TradeDisplayData tpEntry = array.get(tpData, i)
+                    TradeDisplayData slEntry = array.get(slData, i)
+                    string tpPipsDisplay = (hasActiveTrades and (tpEntry.status == "En cours" or tpEntry.status == "Neutralisé")) ? (na(tpEntry.pips) ? "-" : str.tostring(math.round(tpEntry.pips), "#") + " pips") : "-"
+                    string slPipsDisplay = (hasActiveTrades and (slEntry.status == "En cours" or slEntry.status == "Neutralisé")) ? (na(slEntry.pips) ? "-" : str.tostring(math.round(slEntry.pips), "#") + " pips") : "-"
+                    table.cell(tradeSummaryTable, i + 1, 1, tpPipsDisplay, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                    table.cell(tradeSummaryTable, i + 1 + numtrade, 1, slPipsDisplay, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                table.cell(tradeSummaryTable, numColumns - 1, 1, totalPipsDisplay, bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
+
+                // Row "Niveaux"
+                table.cell(tradeSummaryTable, 0, 2, "Niveaux", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+                for i = 0 to numtrade - 1
+                    TradeDisplayData tpEntry = array.get(tpData, i)
+                    TradeDisplayData slEntry = array.get(slData, i)
+                    string tpLevelDisplay = (hasActiveTrades and (tpEntry.status == "En cours" or tpEntry.status == "Neutralisé")) ? (na(tpEntry.level) ? "-" : str.tostring(tpEntry.level, "#.##") + " $") : "-"
+                    string slLevelDisplay = (hasActiveTrades and slEntry.status == "Neutralisé") ? str.tostring(slEntry.level, "#.##") + " $" : (hasActiveTrades and slEntry.status == "En cours") ? (na(slEntry.level) ? "-" : str.tostring(slEntry.level, "#.##") + " $") : "-"
+                    table.cell(tradeSummaryTable, i + 1, 2, tpLevelDisplay, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                    table.cell(tradeSummaryTable, i + 1 + numtrade, 2, slLevelDisplay, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                table.cell(tradeSummaryTable, numColumns - 1, 2, totalLevelDisplay, bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
+
+                // Row "Risque"
+                table.cell(tradeSummaryTable, 0, 3, "Risque", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+                for i = 0 to numtrade - 1
+                    TradeDisplayData tpEntry = array.get(tpData, i)
+                    TradeDisplayData slEntry = array.get(slData, i)
+                    string tpRiskDisplay = (hasActiveTrades and (tpEntry.status == "En cours" or tpEntry.status == "Neutralisé")) ? str.tostring(risque_par_trade, "#.##") + "%" : "-"
+                    string slRiskDisplay = (hasActiveTrades and (slEntry.status == "En cours" or slEntry.status == "Neutralisé")) ? str.tostring(risque_par_trade, "#.##") + "%" : "-"
+                    table.cell(tradeSummaryTable, i + 1, 3, tpRiskDisplay, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                    table.cell(tradeSummaryTable, i + 1 + numtrade, 3, slRiskDisplay, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                table.cell(tradeSummaryTable, numColumns - 1, 3, totalRiskDisplay, bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
+
+                // Row "Lot"
+                table.cell(tradeSummaryTable, 0, 4, "Lot", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+                for i = 0 to numtrade - 1
+                    TradeDisplayData tpEntry = array.get(tpData, i)
+                    TradeDisplayData slEntry = array.get(slData, i)
+                    string tpLotDisplay = (hasActiveTrades and (tpEntry.status == "En cours" or tpEntry.status == "Neutralisé")) ? str.tostring(lotSize, "#.##") : "-"
+                    string slLotDisplay = (hasActiveTrades and (slEntry.status == "En cours" or slEntry.status == "Neutralisé")) ? str.tostring(lotSize, "#.##") : "-"
+                    table.cell(tradeSummaryTable, i + 1, 4, tpLotDisplay, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                    table.cell(tradeSummaryTable, i + 1 + numtrade, 4, slLotDisplay, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                table.cell(tradeSummaryTable, numColumns - 1, 4, totalLotDisplay, bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
+
+                // Row "Gain/Perte"
+                table.cell(tradeSummaryTable, 0, 5, "Gain/Perte", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+                for i = 0 to numtrade - 1
+                    TradeDisplayData tpEntry = array.get(tpData, i)
+                    TradeDisplayData slEntry = array.get(slData, i)
+                    string tpPnLDisplay = (hasActiveTrades and (tpEntry.status == "En cours" or tpEntry.status == "Neutralisé")) ? str.tostring(tpEntry.pnl, "#.##") + " $" : "-"
+                    string slPnLDisplay = (hasActiveTrades and (slEntry.status == "En cours" or slEntry.status == "Neutralisé")) ? (na(slEntry.pnl) ? "-" : str.tostring(slEntry.pnl, "#.##") + " $") : "-"
+                    table.cell(tradeSummaryTable, i + 1, 5, tpPnLDisplay, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                    table.cell(tradeSummaryTable, i + 1 + numtrade, 5, slPnLDisplay, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                table.cell(tradeSummaryTable, numColumns - 1, 5, totalPnLDisplay, bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
+
+                // Row "Statut"
+                table.cell(tradeSummaryTable, 0, 6, "Statut", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+                for i = 0 to numtrade - 1
+                    TradeDisplayData tpEntry = array.get(tpData, i)
+                    TradeDisplayData slEntry = array.get(slData, i)
+                    string finalTpStatus = tpEntry.status
+                    string finalSlStatus = slEntry.status
+                    if not hasActiveTrades
+                        if slHitBeforeTP
+                            finalTpStatus := "Non atteint"
+                            finalSlStatus := "Touché"
+                        else if anyTpHit
+                            finalTpStatus := "Touché"
+                            finalSlStatus := "Non atteint"
+                    table.cell(tradeSummaryTable, i + 1, 6, finalTpStatus, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                    table.cell(tradeSummaryTable, i + 1 + numtrade, 6, finalSlStatus, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                table.cell(tradeSummaryTable, numColumns - 1, 6, "-", bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
+
+float obvPlotValue = showOBV and array.size(tradesArray) == 0 ? obvNormalized : na
+float obvMAPlotValue = showOBV and array.size(tradesArray) == 0 ? obvMANormalized : na
+float upperBBPlotValue = showSqueeze and array.size(tradesArray) == 0 ? upperBB : na
+float basisPlotValue = showSqueeze and array.size(tradesArray) == 0 ? basis : na
+float lowerBBPlotValue = showSqueeze and array.size(tradesArray) == 0 ? lowerBB : na
+float upperKCPlotValue = showSqueeze and array.size(tradesArray) == 0 ? upperKC : na
+float maPlotValue = showSqueeze and array.size(tradesArray) == 0 ? ma : na
+float lowerKCPlotValue = showSqueeze and array.size(tradesArray) == 0 ? lowerKC : na
+float stmaUpPlotValue = showSTMA and array.size(tradesArray) == 0 ? stmaUpPlot : na
+float stmaDnPlotValue = showSTMA and array.size(tradesArray) == 0 ? stmaDnPlot : na
+float stmaMPlotValue = showSTMA and array.size(tradesArray) == 0 ? stmaMPlot : na
+color stmaLongFillColorValue = showSTMA and array.size(tradesArray) == 0 ? (stmaTrend == 1 ? color.new(color.green, 75) : color.new(color.white, 100)) : color.new(color.white, 100)
+color stmaShortFillColorValue = showSTMA and array.size(tradesArray) == 0 ? (stmaTrend == -1 ? color.new(color.red, 75) : color.new(color.white, 100)) : color.new(color.white, 100)
+
+var obvPlotId = plot(obvPlotValue, "OBV", color.new(color.green, 20), 1)
+var obvMAPlotId = plot(obvMAPlotValue, "OBV MA", color.new(color.red, 20), 1)
+fill(obvPlotId, obvMAPlotId, title="OBV Fill", color=obv > obvMA ? color.new(color.yellow, 20) : color.new(color.yellow, 80))
+var upperBBPlotId = plot(upperBBPlotValue, "BB Upper", color.new(color.blue, 20), 1, style=plot.style_line)
+plot(basisPlotValue, "BB Middle", color.new(color.blue, 20), 1, style=plot.style_line)
+var lowerBBPlotId = plot(lowerBBPlotValue, "BB Lower", color.new(color.blue, 20), 1, style=plot.style_line)
+var upperKCPlotId = plot(upperKCPlotValue, "KC Upper", color.new(color.orange, 20), 1, style=plot.style_line)
+plot(maPlotValue, "KC Middle", color.new(color.orange, 20), 1, style=plot.style_line)
+var lowerKCPlotId = plot(lowerKCPlotValue, "KC Lower", color.new(color.orange, 20), 1, style=plot.style_line)
+fill(upperBBPlotId, lowerBBPlotId, title="BB Fill", color=squeezeOn ? color.new(color.purple, 80) : color.new(color.blue, 80))
+fill(upperKCPlotId, lowerKCPlotId, title="KC Fill", color=squeezeOn ? color.new(color.purple, 80) : color.new(color.orange, 80))
+var stmaMPlotId = plot(stmaMPlotValue, "SuperTrend Middle", color.gray, 1, style=plot.style_circles)
+var stmaUpPlotId = plot(stmaUpPlotValue, "SuperTrend Up", color.green, 1, style=plot.style_linebr)
+var stmaDnPlotId = plot(stmaDnPlotValue, "SuperTrend Down", color.red, 1, style=plot.style_linebr)
+fill(stmaMPlotId, stmaUpPlotId, title="SuperTrend Haussier", color=stmaLongFillColorValue)
+fill(stmaMPlotId, stmaDnPlotId, title="SuperTrend Baissier", color=stmaShortFillColorValue)
+
+float smaDistancePips = (close - longTermSMA) / valeur_pips
+float stmaDistancePips = useSTMA ? (stmaTrend == 1 ? (close - stmaUp) / valeur_pips : (close - stmaDn) / valeur_pips) : na
+float atrPips = currentATR / valeur_pips
+float obvGapPips = useOBV ? (obv - obvMA) / valeur_pips : na
+float fibDistancePips = useFibonacci and not na(fibClosestLevelValue) ? (close - fibClosestLevelValue) / valeur_pips : na
+float srDistancePips = useSR and not na(closestLevelPrice) ? (close - closestLevelPrice) / valeur_pips : na
+float obDistancePips = useOB ? (lastBullishOBDetected ? (close - bottomOBBullish) / valeur_pips : lastBearishOBDetected ? (close - topOBBearish) / valeur_pips : na) : na
+
+// Calcul des indices de volume et momentum
+float volumeIndex = 0.0
+float momentumIndex = 0.0
+
+// Volume Index
+float obvContribution = useOBV and obvRising ? 10.0 : useOBV and obvFalling ? -10.0 : 0.0
+float volumeRawContribution = volumeRatio > volumeThreshold ? 10.0 : volumeRatio < (1.0 / volumeThreshold) ? -10.0 : 0.0
+float fvgObContribution = useFVG and fvgLongCondition ? 10.0 : useFVG and fvgShortCondition ? -10.0 : useOB and lastBearishOBDetected ? 10.0 : useOB and lastBullishOBDetected ? -10.0 : 0.0
+volumeIndex := obvContribution + volumeRawContribution + fvgObContribution
+
+// Momentum Index
+float squeezeContribution = useSqueeze and squeezeOff and mom > minMomentum * avgRange ? 10.0 : useSqueeze and squeezeOff and mom < -minMomentum * avgRange ? -10.0 : 0.0
+float breakoutContribution = useBreakout and bullishBreakout ? 10.0 : useBreakout and bearishBreakout ? -10.0 : 0.0
+float candleContribution = useCandlePatternsInConditions and candleLongCondition ? 10.0 : useCandlePatternsInConditions and candleShortCondition ? -10.0 : 0.0
+momentumIndex := squeezeContribution + breakoutContribution + candleContribution
+
+// Fonction pour ajouter une ligne au tableau des indicateurs avec catégories
+addIndicatorRow(table tbl, int row, string name, bool isActive, bool longCondition, bool shortCondition, float strength, float atrThreshold, float entryPrice, string analysisBullish, string analysisBearish, string analysisNeutral, string actionBullish, string actionBearish, string actionNeutral, color bgColorBullish, color bgColorBearish, color bgColorNeutral, string tooltip, color textColor, float localTrendScoreRef, float distancePips=na) =>
+    // Seuil dynamique basé sur l'ATR
+    float dynamicThreshold = atrThreshold * atrAverage
+    // Déterminer l'état des conditions pour la couleur de fond
+    string conditions = isActive ? ((longCondition or shortCondition) and strength >= dynamicThreshold ? "Favorables" : "Défavorables") : "Inactif"
+    // Calculer l'intensité pour le gradient (normalisée entre 0 et 1)
+    float strengthRatio = isActive and strength > 0 ? math.min(strength / (dynamicThreshold * 2), 1.0) : 0.0
+    // Couleur de fond avec gradient
+    color bgColor = conditions == "Inactif" ? color.new(color.blue, 70) : conditions == "Favorables" ? (longCondition ? color.new(color.green, 70 - 50 * strengthRatio) : color.new(color.red, 70 - 50 * strengthRatio)) : color.new(color.gray, 70)
+    // Ajouter la distance aux niveaux pour Fibonacci
+    string analysis = isActive ? (longCondition and strength >= dynamicThreshold ? analysisBullish + (name == "Fibonacci" and not na(distancePips) ? " (" + str.tostring(distancePips, "#.##") + " pips)" : "") : shortCondition and strength >= dynamicThreshold ? analysisBearish + (name == "Fibonacci" and not na(distancePips) ? " (" + str.tostring(distancePips, "#.##") + " pips)" : "") : analysisNeutral) : "DÉSACTIVÉ"
+    string action = isActive ? (longCondition and strength >= dynamicThreshold ? actionBullish : shortCondition and strength >= dynamicThreshold ? actionBearish : actionNeutral) : "DÉSACTIVÉ"
+    // Fibonacci avec couleur plus vive
+    if name == "Fibonacci" and conditions == "Favorables"
+        bgColor := longCondition ? color.new(color.lime, 50) : color.new(color.fuchsia, 50)
+    // Ajouter les cellules
+    table.cell(tbl, 0, row, name, bgcolor=bgColor, text_color=textColor, text_size=size.normal, tooltip=tooltip)
+    table.cell(tbl, 1, row, analysis, bgcolor=bgColor, text_color=textColor, text_size=size.normal)
+    table.cell(tbl, 2, row, action, bgcolor=bgColor, text_color=textColor, text_size=size.normal)
+    // Mettre à jour le score pour la synthèse basé sur les catégories
+    float newTrendScore = localTrendScoreRef
+    if isActive and (longCondition or shortCondition) and strength >= dynamicThreshold
+        // Ajouter une contribution proportionnelle selon la catégorie
+        float contribution = name == "SMA Long Terme" or name == "SuperTrend" or name == "MTF Trend" or name == "Fibonacci" or name == "S/R" ? 1.0 : name == "Squeeze" or name == "Candle" or name == "Breakout" ? 0.5 : 0.5
+        newTrendScore := longCondition ? localTrendScoreRef + contribution : localTrendScoreRef - contribution
+    newTrendScore
+
+if barstate.isconfirmed and bar_index >= 4
+    bool shouldDisplayTable = indicatorTableDisplay == "Afficher" ? true : indicatorTableDisplay == "Afficher et fermer à l'ouverture d'un trade" ? array.size(tradesArray) == 0 : false
+    // Supprimer le tableau existant si shouldDisplayTable est faux
+    if not shouldDisplayTable and not na(mainTable)
+        table.delete(mainTable)
+        mainTable := na
+    // Créer ou mettre à jour le tableau si shouldDisplayTable est vrai
+    if shouldDisplayTable
+        int validNumCols = 3
+        int validNumRows = 20
+        if not na(mainTable)
+            table.delete(mainTable)
+        mainTable := table.new(position.top_right, validNumCols, validNumRows, border_width=1, border_color=color.white, frame_color=color.white, frame_width=2)
+        table.cell(mainTable, 0, 0, "INDICATEURS", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+        table.cell(mainTable, 1, 0, "ANALYSE", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+        table.cell(mainTable, 2, 0, "ACTION", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+        // Calcul des distances en pips avec protection contre na
+        fibDistancePips := useFibonacci and not na(fibClosestLevelValue) ? (close - fibClosestLevelValue) / valeur_pips : 0.0
+        srDistancePips := useSR and not na(closestLevelPrice) ? (close - closestLevelPrice) / valeur_pips : 0.0
+        obDistancePips := useOB ? (lastBullishOBDetected ? (close - bottomOBBullish) / valeur_pips : lastBearishOBDetected ? (close - topOBBearish) / valeur_pips : 0.0) : 0.0
+        mtfDistancePips := useMTF and not na(mtfClose) and not na(mtfSMA) ? (mtfClose - mtfSMA) / valeur_pips : 0.0
+        // Compter les indicateurs actifs
+        int activeIndicators = 0
+        activeIndicators := activeIndicators + (useLongTermSMA ? 1 : 0)
+        activeIndicators := activeIndicators + (useSTMA ? 1 : 0)
+        activeIndicators := activeIndicators + (useOBV ? 1 : 0)
+        activeIndicators := activeIndicators + (useSqueeze ? 1 : 0)
+        activeIndicators := activeIndicators + (useCandlePatternsInConditions ? 1 : 0)
+        activeIndicators := activeIndicators + (useFVG ? 1 : 0)
+        activeIndicators := activeIndicators + (useFibonacci ? 1 : 0)
+        activeIndicators := activeIndicators + (useSR ? 1 : 0)
+        activeIndicators := activeIndicators + (useBreakout ? 1 : 0)
+        activeIndicators := activeIndicators + (useOB ? 1 : 0)
+        activeIndicators := activeIndicators + 3  // Volume, Momentum, Tendance
+        activeIndicators := activeIndicators + (useMTF ? 1 : 0)
+        activeIndicators := activeIndicators + 1  // Alignement
+        int rowIndex = 1
+        float localTrendScore = 0.0
+        // SMA Long Terme
+        float smaStrength = useLongTermSMA ? math.max(math.abs(smaDistancePips), math.abs(smaSlope) * 10) : 0.0
+        float smaEntryPrice = useLongTermSMA ? (useSR and not na(supportLevel) ? supportLevel : close) : na
+        bool smaLongCondition = useLongTermSMA and (close > longTermSMA or smaSlope > 0)
+        bool smaShortCondition = useLongTermSMA and (close < longTermSMA or smaSlope < 0)
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "SMA Long Terme", useLongTermSMA, smaLongCondition, smaShortCondition, smaStrength, 1.0, smaEntryPrice, "Tendance haussière forte", "Tendance baissière forte", "Pas de tendance claire", "Surveiller la poursuite haussière", "Surveiller la poursuite baissière", "Attendre une tendance claire", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Évalue la tendance à long terme via une moyenne mobile simple.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // SuperTrend
+        float stmaStrength = useSTMA ? math.abs(stmaDistancePips) : 0.0
+        float stmaEntryPrice = useSTMA ? (useSR and not na(supportLevel) ? supportLevel : close) : na
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "SuperTrend", useSTMA, stmaLongCondition, stmaShortCondition, stmaStrength, 1.0, stmaEntryPrice, "Micro-tendance haussière", "Micro-tendance baissière", "Pas de micro-tendance", "Surveiller la poursuite haussière", "Surveiller la poursuite baissière", "Attendre un signal SuperTrend", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Évalue les micro-tendances à court terme via SuperTrend.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // MTF Trend
+        float mtfStrength = useMTF ? math.abs(mtfDistancePips) : 0.0
+        float mtfEntryPrice = na
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "MTF Trend", useMTF, mtfTrendUp, mtfTrendDown, mtfStrength, 1.0, mtfEntryPrice, "Tendance haussière MTF", "Tendance baissière MTF", "Pas de tendance MTF claire", "Aligner avec tendance haussière MTF", "Aligner avec tendance baissière MTF", "Attendre une tendance MTF claire", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Évalue la tendance sur une timeframe supérieure.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // OBV
+        float obvMA5 = ta.sma(obv, 5)
+        float obvStrength = useOBV ? math.abs(obv - obvMA5) / obvMA5 * 100 : 0.0
+        float obvEntryPrice = useOBV ? (useSR and not na(supportLevel) ? supportLevel : close) : na
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "OBV", useOBV, obvRising, obvFalling, obvStrength, 1.0, obvEntryPrice, "Pression acheteuse", "Pression vendeuse", "Volume stable", "Surveiller la pression acheteuse", "Surveiller la pression vendeuse", "Attendre une divergence de volume", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Confirme les mouvements via l'OBV.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // Squeeze
+        float squeezeStrength = useSqueeze ? math.abs(mom / avgRange) : 0.0
+        float squeezeEntryPrice = useSqueeze ? (useSR and not na(resistanceLevel) ? resistanceLevel : close) : na
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "Squeeze", useSqueeze, squeezeLongCondition, squeezeShortCondition, squeezeStrength, 1.0, squeezeEntryPrice, "Breakout haussier", "Breakout baissier", "Volatilité faible", "Anticiper un breakout haussier", "Anticiper un breakout baissier", "Attendre une expansion de volatilité", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Anticipe les breakouts via Squeeze Momentum.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // Candle
+        float candleStrength = useCandlePatternsInConditions ? math.abs(close - open) / atrPips : 0.0
+        float candleEntryPrice = useCandlePatternsInConditions ? (useSR and not na(supportLevel) ? supportLevel : close) : na
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "Candle", useCandlePatternsInConditions, candleLongCondition, candleShortCondition, candleStrength, 1.0, candleEntryPrice, "Motif haussier détecté", "Motif baissier détecté", candlePattern != "" ? "Motif neutre" : "Aucun motif", "Confirmer le motif haussier", "Confirmer le motif baissier", "Attendre un motif significatif", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Détecte les motifs de chandeliers.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // FVG
+        float fvgStrength = 10.0
+        float fvgEntryPrice = useFVG and array.size(allFVGs) > 0 and not na(array.get(allFVGs, array.size(allFVGs) - 1).fvg) ? (array.get(allFVGs, array.size(allFVGs) - 1).fvg.bias == 1 ? array.get(allFVGs, array.size(allFVGs) - 1).fvg.bottom : array.get(allFVGs, array.size(allFVGs) - 1).fvg.top) : na
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "FVG", useFVG, fvgLongCondition, fvgShortCondition, fvgStrength, 1.0, fvgEntryPrice, "Imbalance haussière", "Imbalance baissière", "Pas d’imbalance", "Surveiller l’imbalance haussière", "Surveiller l’imbalance baissière", "Attendre une zone d’imbalance", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Identifie les Fair Value Gaps.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // Fibonacci
+        float fibStrength = useFibonacci ? fibDistancePips : 0.0
+        float fibEntryPrice = useFibonacci and not na(fibClosestLevel) ? fibClosestLevelValue : na
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "Fibonacci", useFibonacci, fibLongCondition, fibShortCondition, fibStrength, 0.5, fibEntryPrice, "Retrac. haussier clé", "Retrac. baissier clé", not na(fibClosestLevel) ? "Niveau Fibonacci proche" : "Pas de retracement", "Surveiller un rebond sur retracement", "Surveiller un rejet sur retracement", "Attendre un niveau Fibonacci clé", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Calcule les niveaux Fibonacci.", color.white, localTrendScore, fibDistancePips)
+        rowIndex := rowIndex + 1
+        // Support/Résistance
+        float srStrength = useSR ? srDistancePips : 0.0
+        float srEntryPrice = useSR and not na(closestLevelPrice) ? closestLevelPrice : na
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "S/R", useSR, srLongCondition, srShortCondition, srStrength, 1.0, srEntryPrice, "Support détecté", "Résistance détectée", not na(closestLevelPrice) ? "Niveau S/R proche" : "Pas de S/R", "Surveiller un rebond sur support", "Surveiller un rejet sur résistance", "Attendre un niveau S/R", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Identifie les niveaux de support/résistance.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // Breakout
+        float breakoutStrength = useBreakout ? volumeRatio : 0.0
+        float breakoutEntryPrice = useBreakout ? (useSR and not na(resistanceLevel) ? resistanceLevel : close) : na
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "Breakout", useBreakout, bullishBreakout, bearishBreakout, breakoutStrength, 1.0, breakoutEntryPrice, "Cassure haussière", "Cassure baissière", "Pas de cassure", "Confirmer la cassure haussière", "Confirmer la cassure baissière", "Attendre une cassure", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Détecte les cassures de S/R.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // Order Blocks
+        float obStrength = useOB ? obDistancePips : 0.0
+        float obEntryPrice = useOB ? (lastBearishOBDetected ? customOBBearish : lastBullishOBDetected ? customOBBullish : na) : na
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "Order Blocks", useOB, lastBearishOBDetected, lastBullishOBDetected, obStrength, 1.0, obEntryPrice, "Zone acheteuse", "Zone vendeuse", "Pas d’OB actif", "Surveiller une zone acheteuse", "Surveiller une zone vendeuse", "Attendre un Order Block", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Identifie les Order Blocks.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // Séparateur visuel
+        table.cell(mainTable, 0, rowIndex, "INDEX", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal, tooltip="Moyennes des indicateurs par catégorie")
+        table.cell(mainTable, 1, rowIndex, "SYNTHÈSE", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+        table.cell(mainTable, 2, rowIndex, "ACTION", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+        rowIndex := rowIndex + 1
+        // Alignement des indicateurs
+        float alignStrength = (trendCountLong + trendCountShort + momentumCountLong + momentumCountShort + volumeCountLong + volumeCountShort) / math.max(activeIndicators - 3, 1) * 10
+        bool alignLong = trendCountLong >= trendThreshold and momentumCountLong >= momentumThreshold and volumeCountLong >= volumeThresholdCategory
+        bool alignShort = trendCountShort >= trendThreshold and momentumCountShort >= momentumThreshold and volumeCountShort >= volumeThresholdCategory
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "Alignement", true, alignLong, alignShort, alignStrength, 1.0, na, "Forte convergence haussière", "Forte convergence baissière", "Convergence insuffisante", "Confirmer alignement haussier", "Confirmer alignement baissier", "Attendre plus d’alignement", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Évalue l’alignement des indicateurs.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // Tendance
+        float synthEntryPrice = canTrade ? (useSR and not na(closestLevelPrice) ? closestLevelPrice : useFibonacci and not na(fibClosestLevelValue) ? fibClosestLevelValue : useOB and not na(customOBBearish) ? customOBBearish : close) : na
+        float trendScoreCombined = (trendCountLong + momentumCountLong + volumeCountLong) - (trendCountShort + momentumCountShort + volumeCountShort)
+        string trendAnalysis = array.size(tradesArray) > 0 ? "Position ouverte" : dailyLossLimitReached ? "Limite perte atteinte" : not isWithinTradingHours ? "Hors horaires" : trendScoreCombined > 0 ? "Tendance haussière globale" : trendScoreCombined < 0 ? "Tendance baissière globale" : "Tendance neutre"
+        string trendAction = array.size(tradesArray) > 0 ? "Maintenir la position" : dailyLossLimitReached ? "Attendre demain" : not isWithinTradingHours ? "Attendre horaires" : trendScoreCombined > 0 ? "Confirmer la tendance haussière" : trendScoreCombined < 0 ? "Confirmer la tendance baissière" : "Attendre une tendance claire"
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "Tendance", true, trendScoreCombined > 0, trendScoreCombined < 0, math.abs(trendScoreCombined), 0, synthEntryPrice, trendAnalysis, trendAnalysis, trendAnalysis, trendAction, trendAction, trendAction, color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Évalue la tendance globale.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // Volume
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "Volume", true, volumeCountLong > 0, volumeCountShort > 0, math.abs(volumeCountLong - volumeCountShort), 1, na, "Volume haussier", "Volume baissier", "Volume neutre", "Confirmer avec volume haussier", "Confirmer avec volume baissier", "Attendre un volume significatif", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Mesure la force du volume.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // Momentum
+        localTrendScore := addIndicatorRow(mainTable, rowIndex, "Momentum", true, momentumCountLong > 0, momentumCountShort > 0, math.abs(momentumCountLong - momentumCountShort), 1, na, "Momentum haussier", "Momentum baissier", "Momentum neutre", "Confirmer la dynamique haussière", "Confirmer la dynamique baissière", "Attendre une dynamique forte", color.new(color.green, 70), color.new(color.red, 70), color.new(color.gray, 70), "Mesure la vitesse des prix.", color.white, localTrendScore)
+        rowIndex := rowIndex + 1
+        // Synthèse (CONSEIL)
+        float synthScore = trendScoreCombined
+        string synthAnalysis = array.size(tradesArray) > 0 ? "Position ouverte (" + (strategy.position_size > 0 ? "Achat" : "Vente") + ")" : dailyLossLimitReached ? "Limite de perte atteinte" : not isWithinTradingHours ? "Hors horaires de trading" : synthScore > 0 ? "Signaux haussiers alignés" : synthScore < 0 ? "Signaux baissiers alignés" : "Signaux neutres ou contraintes actives"
+        string synthAction = array.size(tradesArray) > 0 ? "Maintenir la position" : dailyLossLimitReached ? "Attendre demain" : not isWithinTradingHours ? "Attendre horaires" : synthScore > 0 ? "Achat à " + str.tostring(synthEntryPrice, "#.##") + "$" : synthScore < 0 ? "Vente à " + str.tostring(synthEntryPrice, "#.##") + "$" : "Attendre"
+        color conseilColor = synthAction == "Achat à " + str.tostring(synthEntryPrice, "#.##") + "$" ? color.green : synthAction == "Vente à " + str.tostring(synthEntryPrice, "#.##") + "$" ? color.red : color.blue
+        table.cell(mainTable, 0, rowIndex, "CONSEIL", bgcolor=color.new(color.white, 20), text_color=conseilColor, text_size=size.normal, tooltip="Synthèse des signaux pour une décision de trading finale.")
+        table.cell(mainTable, 1, rowIndex, synthAnalysis, bgcolor=color.new(color.white, 20), text_color=conseilColor, text_size=size.normal)
+        table.cell(mainTable, 2, rowIndex, synthAction, bgcolor=color.new(color.white, 20), text_color=conseilColor, text_size=size.normal)
+
+// TABLEAU DE LÉGENDE DES COULEURS
+var table legendTable = na
+// Définir shouldDisplayTable pour synchroniser avec le tableau principal
+bool shouldDisplayTable = indicatorTableDisplay == "Afficher" ? true : indicatorTableDisplay == "Afficher et fermer à l'ouverture d'un trade" ? array.size(tradesArray) == 0 : false
+if shouldDisplayTable
+    // Supprimer la table de légende existante si nécessaire
+    if not na(legendTable)
+        table.delete(legendTable)
+    // Créer une nouvelle table de légende
+    legendTable := table.new(position.bottom_right, 2, 6, border_width=1, border_color=color.white, frame_color=color.white, frame_width=2)
+    // En-tête
+    table.cell(legendTable, 0, 0, "COULEUR", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal, tooltip="Légende des couleurs utilisées dans le tableau des indicateurs")
+    table.cell(legendTable, 1, 0, "SIGNIFICATION", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    // Ligne 1 : Vert (haussier)
+    table.cell(legendTable, 0, 1, "", bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.normal)
+    table.cell(legendTable, 1, 1, "Signal haussier (plus sombre = plus fort)", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal, tooltip="Indicateur actif avec condition haussière et force suffisante")
+    // Ligne 2 : Rouge (baissier)
+    table.cell(legendTable, 0, 2, "", bgcolor=color.new(color.red, 50), text_color=color.white, text_size=size.normal)
+    table.cell(legendTable, 1, 2, "Signal baissier (plus sombre = plus fort)", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal, tooltip="Indicateur actif avec condition baissière et force suffisante")
+    // Ligne 3 : Gris (défavorable)
+    table.cell(legendTable, 0, 3, "", bgcolor=color.new(color.gray, 70), text_color=color.white, text_size=size.normal)
+    table.cell(legendTable, 1, 3, "Signal défavorable", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal, tooltip="Indicateur actif mais sans condition haussière/baissière remplie")
+    // Ligne 4 : Bleu (inactif)
+    table.cell(legendTable, 0, 4, "", bgcolor=color.new(color.blue, 70), text_color=color.white, text_size=size.normal)
+    table.cell(legendTable, 1, 4, "Indicateur inactif", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal, tooltip="Indicateur désactivé dans les paramètres")
+    // Ligne 5 : Lime/Fuchsia (Fibonacci)
+    table.cell(legendTable, 0, 5, "", bgcolor=color.new(color.lime, 50), text_color=color.white, text_size=size.normal)
+    table.cell(legendTable, 1, 5, "Fibonacci haussier/baissier fort", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal, tooltip="Signal Fibonacci haussier (lime) ou baissier (fuchsia) près des niveaux clés")
+else if not shouldDisplayTable and not na(legendTable)
+    // Supprimer la table de légende si le tableau principal n'est pas affiché
+    table.delete(legendTable)
+    legendTable := na
+
+// Tracé de la SMA Long Terme// Tracé de la SMA Long Terme avec couleur conditionnelle
+float smaPlotValue = showLongTermSMA ? smaForDisplay : na
+color smaColor = showLongTermSMA ? (smaSlope > 0 ? color.green : smaSlope < 0 ? color.red : color.white) : na
+plot(smaPlotValue, "SMA Long Terme", color=smaColor, linewidth=2, style=plot.style_line)
+
+// TABLEAU DE BACKTESTING
+if enableBacktest and barstate.islastconfirmedhistory
+    if not na(backtestMetricsTable)
+        table.delete(backtestMetricsTable)
+    backtestMetricsTable := table.new(position.bottom_left, 2, 11, border_width=1, border_color=color.black, frame_color=color.black, frame_width=2)
+    
+    table.cell(backtestMetricsTable, 0, 0, "Métriques", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    table.cell(backtestMetricsTable, 1, 0, "Valeurs", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    
+    float periodInDays = backtestTotalTradeDuration * timeframe.in_seconds(timeframe.period) / (24 * 3600)
+    // Arrondir à la demi-journée la plus proche
+    float roundedPeriodInDays = math.round(periodInDays * 2) / 2
+    table.cell(backtestMetricsTable, 0, 1, "Période de backtesting", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    table.cell(backtestMetricsTable, 1, 1, str.tostring(roundedPeriodInDays, "#.0") + " jours", bgcolor=color.new(color.purple, 50), text_color=color.white, text_size=size.normal)
+    
+    float avgTradeDurationMinutes = backtestTradeCount > 0 ? (backtestTotalTradeDuration * timeframe.in_seconds(timeframe.period)) / (backtestTradeCount * 60) : 0.0
+    table.cell(backtestMetricsTable, 0, 2, "Durée moyenne d'un trade", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    table.cell(backtestMetricsTable, 1, 2, str.tostring(avgTradeDurationMinutes, "#.##") + " mn", bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.normal)
+    
+    table.cell(backtestMetricsTable, 0, 3, "Total trades", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    table.cell(backtestMetricsTable, 1, 3, str.tostring(winningTrades + losingTrades + tradesBreakEven), bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.normal)
+    
+    table.cell(backtestMetricsTable, 0, 4, "Trades gagnants", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    table.cell(backtestMetricsTable, 1, 4, str.tostring(winningTrades), bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.normal)
+    
+    table.cell(backtestMetricsTable, 0, 5, "Trades perdants", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    table.cell(backtestMetricsTable, 1, 5, str.tostring(losingTrades), bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.normal)
+    
+    table.cell(backtestMetricsTable, 0, 6, "Trades break-even", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    table.cell(backtestMetricsTable, 1, 6, str.tostring(tradesBreakEven), bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.normal)
+    
+    float winRate = (winningTrades + losingTrades + tradesBreakEven) > 0 ? (winningTrades / (winningTrades + losingTrades + tradesBreakEven)) * 100 : 0.0
+    table.cell(backtestMetricsTable, 0, 7, "Winrate", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    table.cell(backtestMetricsTable, 1, 7, str.tostring(winRate, "#.##") + "%", bgcolor=color.new(color.green, 50), text_color=color.white, text_size=size.normal)
+    
+    table.cell(backtestMetricsTable, 0, 8, "Capital de départ", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    table.cell(backtestMetricsTable, 1, 8, str.tostring(inputCapital, "#.##") + " $", bgcolor=color.new(color.blue, 50), text_color=color.white, text_size=size.normal)
+    
+    float gainsLosses = cumulativePnL
+    table.cell(backtestMetricsTable, 0, 9, "Gains/Pertes", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    table.cell(backtestMetricsTable, 1, 9, str.tostring(gainsLosses, "#.##") + " $", bgcolor=color.new(color.blue, 50), text_color=color.white, text_size=size.normal)
+    
+    float displayedCapital = inputCapital + cumulativePnL
+    table.cell(backtestMetricsTable, 0, 10, "Capital disponible", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
+    table.cell(backtestMetricsTable, 1, 10, str.tostring(displayedCapital, "#.##") + " $", bgcolor=color.new(color.blue, 50), text_color=color.white, text_size=size.normal)

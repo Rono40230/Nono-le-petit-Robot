@@ -470,101 +470,37 @@ createVisual(string visualType, float price, string style, color lineColor, stri
         label.set_xy(existingLabel, endBar, price)
     [newLine, newBox, newLabel]
 
-// Fonction pour détecter les motifs de chandeliers japonais
-detectCandlePattern() =>
-    string pattern = ""
-    bool isUp = false
-    
-    float totalRange = high - low
-    bool nearSupport = not na(supportLevel) and close >= supportLevel - tolerance
-    bool nearResistance = not na(resistanceLevel) and close <= resistanceLevel + tolerance
-    
-    if math.abs(close - open) <= totalRange * 0.05
-        pattern := "Doji (Neutre)"
-        isUp := true
-    else if close > open and close[1] < open[1] and close > open[1] and open < close[1]
-        pattern := "Bullish Engulfing"
-        isUp := true
-    else if close < open and close[1] > open[1] and close < open[1] and open > close[1]
-        pattern := "Bearish Engulfing"
-        isUp := false
-    else if math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and 
-            ((high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent or 
-            (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent) and 
-            close > open and 
-            (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent and
-            close[1] < close[2] and 
-            nearSupport
-        pattern := "Hammer"
-        isUp := true
-    else if math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and 
-            ((high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent or 
-            (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent) and 
-            close > open and 
-            (high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent and
-            close[1] < close[2] and 
-            nearSupport
-        pattern := "Inverted Hammer"
-        isUp := true
-    else if math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and 
-            close > open and 
-            not ((math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent) and 
-            not ((high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent) and
-            close[1] < close[2] and 
-            nearSupport
-        pattern := "Pin Bar Bullish"
-        isUp := true
-    else if math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and 
-            close < open and 
-            (high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent and
-            close[1] > close[2] and 
-            nearResistance
-        pattern := "Shooting Star"
-        isUp := false
-    else if math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and 
-            close < open and 
-            not ((high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent) and
-            close[1] > close[2] and 
-            nearResistance
-        pattern := "Pin Bar Bearish"
-        isUp := false
-    else if math.abs(high - close) < (high - low) * marubozuWickMaxPercent and 
-            math.abs(open - low) < (high - low) * marubozuWickMaxPercent and 
-            math.abs(close - open) >= (high - low) * marubozuBodyMinPercent and 
-            close > open
-        pattern := "Marubozu Up"
-        isUp := true
-    else if math.abs(high - open) < (high - low) * marubozuWickMaxPercent and 
-            math.abs(close - low) < (high - low) * marubozuWickMaxPercent and 
-            math.abs(close - open) >= (high - low) * marubozuBodyMinPercent and 
-            close < open
-        pattern := "Marubozu Down"
-        isUp := false
-    else
-        pattern := ""
-        isUp := false
-    
-    [pattern, isUp]
-
 calculateSqueeze() =>
-    local_basis = ta.sma(close, bbLength)
-    local_dev = bbMult * ta.stdev(close, bbLength)
-    local_upperBB = local_basis + local_dev
-    local_lowerBB = local_basis - local_dev
-    local_ma = ta.sma(close, kcLength)
-    local_trueRange = ta.tr(true)
-    local_rangema = ta.sma(local_trueRange, kcLength)
-    local_upperKC = local_ma + local_rangema * kcMult
-    local_lowerKC = local_ma - local_rangema * kcMult
-    local_squeezeOn = local_lowerBB > local_lowerKC and local_upperBB < local_upperKC
-    local_squeezeOff = local_lowerBB < local_lowerKC or local_upperBB > local_upperKC
-    local_momentum = ta.mom(close, 8)
+    // Calcul de la moyenne mobile et de l'écart type (utilisés plusieurs fois)
+    float local_basis = ta.sma(close, bbLength)
+    float local_dev = bbMult * ta.stdev(close, bbLength)
+    
+    // Bandes de Bollinger
+    float local_upperBB = local_basis + local_dev
+    float local_lowerBB = local_basis - local_dev
+    
+    // Canaux de Keltner (stocker les résultats intermédiaires)
+    float local_ma = ta.sma(close, kcLength)
+    float local_rangema = ta.sma(ta.tr(true), kcLength)
+    float local_kcmultRange = local_rangema * kcMult
+    
+    float local_upperKC = local_ma + local_kcmultRange
+    float local_lowerKC = local_ma - local_kcmultRange
+    
+    // Conditions Squeeze
+    bool local_squeezeOn = local_lowerBB > local_lowerKC and local_upperBB < local_upperKC
+    bool local_squeezeOff = local_lowerBB < local_lowerKC or local_upperBB > local_upperKC
+    
+    // Momentum
+    float local_momentum = ta.mom(close, 8)
+    
     [local_squeezeOn, local_squeezeOff, local_momentum, local_upperBB, local_basis, local_lowerBB, local_upperKC, local_ma, local_lowerKC]
 
 float adjustedTradeFees = trade_fees
 
 // FONCTION POUR DÉTECTER LES FVG
 detectFVG() =>
+    // Utilisation de variables locales pour améliorer la lisibilité
     var fairValueGap newFVG = na
     var float gapSize = 0.0
     var float gapSizePercent = 0.0
@@ -579,6 +515,7 @@ detectFVG() =>
     var bool lastBullishFVGDetectedLocal = false
     var bool lastBearishFVGDetectedLocal = false
 
+    // Variables pour le résultat
     bool localBullishFVGDetected = false
     bool localBearishFVGDetected = false
     bool localBullishConsecutiveDetected = false
@@ -586,62 +523,77 @@ detectFVG() =>
     bool localBullishLiquidityDetected = false
     bool localBearishLiquidityDetected = false
 
+    // Précalculer les valeurs communes
     float lastClose = close[1]
     float lastOpen = open[1]
     float last2High = high[2]
     float last2Low = low[2]
-    float barDeltaPercent = (lastClose - lastOpen) / (lastOpen * 100)
-    bool newTimeframe = timeframe.change("")
-    bool fvgVolumeCondition = volume[1] > avgVolume * fvgVolumeThreshold
-    float thresholdFVG = fvgAutoThreshold ? ta.cum(math.abs(newTimeframe ? barDeltaPercent : 0)) / bar_index * 2 : fvgMinGapSize
-    float minGapHeight = fvgAvgRange * 0.01
     float currentLow = low
     float currentHigh = high
+    
+    // Valeurs dérivées 
+    float barDeltaPercent = (lastClose - lastOpen) / (lastOpen * 100)
+    bool newTimeframe = timeframe.change("")
+    bool fvgVolumeCondition = volume[1] > cachedAvgVolume * fvgVolumeThreshold
+    float thresholdFVG = fvgAutoThreshold ? ta.cum(math.abs(newTimeframe ? barDeltaPercent : 0)) / bar_index * 2 : fvgMinGapSize
+    float minGapHeight = cachedFvgAvgRange * 0.01
 
-    localBullishFVGDetected := false
-    localBearishFVGDetected := false
-    localBullishConsecutiveDetected := false
-    localBearishConsecutiveDetected := false
-    localBullishLiquidityDetected := false
-    localBearishLiquidityDetected := false
-
-    bool bullishFVGBase = currentLow > last2High and lastClose > last2High and (fvgAutoThreshold ? barDeltaPercent > thresholdFVG : true)
-    float fvgGapSizeBull = currentLow - last2High
-    float fvgGapSizePercentBull = fvgGapSizeBull / fvgAvgRange * 100
-    if bullishFVGBase and (fvgMinGapSize == 0.0 or fvgGapSizePercentBull >= fvgMinGapSize) and fvgGapSizeBull >= minGapHeight and fvgVolumeCondition
-        fvgType := "Standard"
-        fvgBias := 1
-        fvgWeight := 1.0
-        gapSize := fvgGapSizeBull
-        gapSizePercent := fvgGapSizePercentBull
-        newFVG := fairValueGap.new(currentLow, last2High, fvgBias, bar_index, time, bar_index, fvgType, true, 0, fvgWeight, true)
-        localBullishFVGDetected := true
-        box fvgBox = na
-        label fvgLabel = na
-        if showFVG
-            fvgBox := box.new(left=bar_index, right=bar_index + 20, top=currentLow, bottom=last2High, border_color=color.yellow, bgcolor=color.new(color.yellow, 20))
-            fvgLabel := label.new(bar_index + 20, currentLow, "Standard Bullish", color=color.new(color.yellow, 20), textcolor=color.white, style=label.style_label_left)
-        FVGWithBox fvgEntry = FVGWithBox.new(newFVG, fvgBox, fvgLabel)
-        array.push(allFVGs, fvgEntry)
-
-    bool bearishFVGBase = currentHigh < last2Low and lastClose < last2Low and (fvgAutoThreshold ? -barDeltaPercent > thresholdFVG : true)
-    float fvgGapSizeBear = last2Low - currentHigh
-    float fvgGapSizePercentBear = fvgGapSizeBear / fvgAvgRange * 100
-    if bearishFVGBase and (fvgMinGapSize == 0.0 or fvgGapSizePercentBear >= fvgMinGapSize) and fvgGapSizeBear >= minGapHeight and fvgVolumeCondition
-        fvgType := "Standard"
-        fvgBias := -1
-        fvgWeight := 1.0
-        gapSize := fvgGapSizeBear
-        gapSizePercent := fvgGapSizePercentBear
-        newFVG := fairValueGap.new(last2Low, currentHigh, fvgBias, bar_index, time, bar_index, fvgType, true, 0, fvgWeight, true)
-        localBearishFVGDetected := true
-        box fvgBox = na
-        label fvgLabel = na
-        if showFVG
-            fvgBox := box.new(left=bar_index, right=bar_index + 20, top=last2Low, bottom=currentHigh, border_color=color.yellow, bgcolor=color.new(color.yellow, 80))
-            fvgLabel := label.new(bar_index + 20, last2Low, "Standard Bearish", color=color.new(color.yellow, 80), textcolor=color.white, style=label.style_label_left)
-        FVGWithBox fvgEntry = FVGWithBox.new(newFVG, fvgBox, fvgLabel)
-        array.push(allFVGs, fvgEntry)
+    // Détection FVG Bullish - calcul conditionnel
+    bool bullishFVGBase = currentLow > last2High and lastClose > last2High
+    
+    if bullishFVGBase
+        // Ne calculer ces valeurs que si la condition de base est remplie
+        bool thresholdCondition = fvgAutoThreshold ? barDeltaPercent > thresholdFVG : true
+        
+        if thresholdCondition 
+            float fvgGapSizeBull = currentLow - last2High
+            float fvgGapSizePercentBull = fvgGapSizeBull / cachedFvgAvgRange * 100
+            
+            if (fvgMinGapSize == 0.0 or fvgGapSizePercentBull >= fvgMinGapSize) and
+               fvgGapSizeBull >= minGapHeight and fvgVolumeCondition
+                
+                fvgType := "Standard"
+                fvgBias := 1
+                fvgWeight := 1.0
+                gapSize := fvgGapSizeBull
+                gapSizePercent := fvgGapSizePercentBull
+                newFVG := fairValueGap.new(currentLow, last2High, fvgBias, bar_index, time, bar_index, fvgType, true, 0, fvgWeight, true)
+                localBullishFVGDetected := true
+                
+                if showFVG
+                    box fvgBox = box.new(left=bar_index, right=bar_index + 20, top=currentLow, bottom=last2High, border_color=color.gray, bgcolor=color.new(color.gray, 20))
+                    label fvgLabel = label.new(bar_index + 20, currentLow, "Standard Bullish", color=color.new(color.gray, 20), textcolor=color.green, style=label.style_label_left)
+                    array.push(allFVGs, FVGWithBox.new(newFVG, fvgBox, fvgLabel))
+                else
+                    array.push(allFVGs, FVGWithBox.new(newFVG, na, na))
+    
+    // Détection FVG Bearish - même approche
+    bool bearishFVGBase = currentHigh < last2Low and lastClose < last2Low
+    
+    if bearishFVGBase
+        bool thresholdCondition = fvgAutoThreshold ? -barDeltaPercent > thresholdFVG : true
+        
+        if thresholdCondition
+            float fvgGapSizeBear = last2Low - currentHigh
+            float fvgGapSizePercentBear = fvgGapSizeBear / cachedFvgAvgRange * 100
+            
+            if (fvgMinGapSize == 0.0 or fvgGapSizePercentBear >= fvgMinGapSize) and
+               fvgGapSizeBear >= minGapHeight and fvgVolumeCondition
+                
+                fvgType := "Standard"
+                fvgBias := -1
+                fvgWeight := 1.0
+                gapSize := fvgGapSizeBear
+                gapSizePercent := fvgGapSizePercentBear
+                newFVG := fairValueGap.new(last2Low, currentHigh, fvgBias, bar_index, time, bar_index, fvgType, true, 0, fvgWeight, true)
+                localBearishFVGDetected := true
+                
+                if showFVG
+                    box fvgBox = box.new(left=bar_index, right=bar_index + 20, top=last2Low, bottom=currentHigh, border_color=color.gray, bgcolor=color.new(color.gray, 80))
+                    label fvgLabel = label.new(bar_index + 20, last2Low, "Standard Bearish", color=color.new(color.gray, 80), textcolor=color.red, style=label.style_label_left)
+                    array.push(allFVGs, FVGWithBox.new(newFVG, fvgBox, fvgLabel))
+                else
+                    array.push(allFVGs, FVGWithBox.new(newFVG, na, na))
 
     if fvgDetectConsecutive and low > high[1] and (fvgMinGapSize == 0.0 or (low - high[1]) / fvgAvgRange * 100 >= fvgMinGapSize) and fvgVolumeCondition
         fvgType := "Consecutive"
@@ -920,6 +872,18 @@ float volumeRatio = volume / avgVolume
 bool sufficientVolume = volumeRatio > volumeThreshold
 bool inRange = ta.stdev(close, bbLength) < bbWidthThreshold * atrAverage
 
+doji = math.abs(close - open) <= (high - low) * 0.05
+bullishEngulfing = close > open and close[1] < open[1] and close > open[1] and open < close[1]
+bearishEngulfing = close < open and close[1] > open[1] and close < open[1] and open > close[1]
+pinBar = math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and ((high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent or (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent)
+hammer = pinBar and close > open and (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent
+invertedHammer = pinBar and close > open and (high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent
+pinBarBullish = pinBar and close > open and not hammer and not invertedHammer
+shootingStar = pinBar and close < open and (high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent
+pinBarBearish = pinBar and close < open and not shootingStar
+marubozuUp = math.abs(high - close) < (high - low) * marubozuWickMaxPercent and math.abs(open - low) < (high - low) * marubozuWickMaxPercent and math.abs(close - open) >= (high - low) * marubozuBodyMinPercent and close > open
+marubozuDown = math.abs(high - open) < (high - low) * marubozuWickMaxPercent and math.abs(close - low) < (high - low) * marubozuWickMaxPercent and math.abs(close - open) >= (high - low) * marubozuBodyMinPercent and close < open
+
 float tolerance = na
 supportLevel = array.size(supportLevels) > 0 ? array.get(supportLevels, array.size(supportLevels) - 1) : na
 resistanceLevel = array.size(resistanceLevels) > 0 ? array.get(resistanceLevels, array.size(resistanceLevels) - 1) : na
@@ -929,7 +893,39 @@ else
     tolerance := close * (proximity / 100)
 
 if useCandlePatternsInConditions or showCandlePatterns
-    [candlePattern, candleIsUp] = detectCandlePattern()
+    if doji
+        candlePattern := "Doji (Neutre)"
+        candleIsUp := true
+    else if bullishEngulfing
+        candlePattern := "Bullish Engulfing"
+        candleIsUp := true
+    else if bearishEngulfing
+        candlePattern := "Bearish Engulfing"
+        candleIsUp := false
+    else if hammer and close[1] < close[2] and not na(supportLevel) and close >= supportLevel - tolerance
+        candlePattern := "Hammer"
+        candleIsUp := true
+    else if invertedHammer and close[1] < close[2] and not na(supportLevel) and close >= supportLevel - tolerance
+        candlePattern := "Inverted Hammer"
+        candleIsUp := true
+    else if pinBarBullish and close[1] < close[2] and not na(supportLevel) and close >= supportLevel - tolerance
+        candlePattern := "Pin Bar Bullish"
+        candleIsUp := true
+    else if shootingStar and close[1] > close[2] and not na(resistanceLevel) and close <= resistanceLevel + tolerance
+        candlePattern := "Shooting Star"
+        candleIsUp := false
+    else if pinBarBearish and close[1] > close[2] and not na(resistanceLevel) and close <= resistanceLevel + tolerance
+        candlePattern := "Pin Bar Bearish"
+        candleIsUp := false
+    else if marubozuUp
+        candlePattern := "Marubozu Up"
+        candleIsUp := true
+    else if marubozuDown
+        candlePattern := "Marubozu Down"
+        candleIsUp := false
+    else
+        candlePattern := ""
+        candleIsUp := false
 else
     candlePattern := ""
     candleIsUp := false

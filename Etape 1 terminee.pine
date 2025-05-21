@@ -470,6 +470,82 @@ createVisual(string visualType, float price, string style, color lineColor, stri
         label.set_xy(existingLabel, endBar, price)
     [newLine, newBox, newLabel]
 
+// Fonction pour détecter les motifs de chandeliers japonais
+detectCandlePattern() =>
+    string pattern = ""
+    bool isUp = false
+    
+    float totalRange = high - low
+    bool nearSupport = not na(supportLevel) and close >= supportLevel - tolerance
+    bool nearResistance = not na(resistanceLevel) and close <= resistanceLevel + tolerance
+    
+    if math.abs(close - open) <= totalRange * 0.05
+        pattern := "Doji (Neutre)"
+        isUp := true
+    else if close > open and close[1] < open[1] and close > open[1] and open < close[1]
+        pattern := "Bullish Engulfing"
+        isUp := true
+    else if close < open and close[1] > open[1] and close < open[1] and open > close[1]
+        pattern := "Bearish Engulfing"
+        isUp := false
+    else if math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and 
+            ((high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent or 
+            (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent) and 
+            close > open and 
+            (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent and
+            close[1] < close[2] and 
+            nearSupport
+        pattern := "Hammer"
+        isUp := true
+    else if math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and 
+            ((high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent or 
+            (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent) and 
+            close > open and 
+            (high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent and
+            close[1] < close[2] and 
+            nearSupport
+        pattern := "Inverted Hammer"
+        isUp := true
+    else if math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and 
+            close > open and 
+            not ((math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent) and 
+            not ((high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent) and
+            close[1] < close[2] and 
+            nearSupport
+        pattern := "Pin Bar Bullish"
+        isUp := true
+    else if math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and 
+            close < open and 
+            (high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent and
+            close[1] > close[2] and 
+            nearResistance
+        pattern := "Shooting Star"
+        isUp := false
+    else if math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and 
+            close < open and 
+            not ((high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent) and
+            close[1] > close[2] and 
+            nearResistance
+        pattern := "Pin Bar Bearish"
+        isUp := false
+    else if math.abs(high - close) < (high - low) * marubozuWickMaxPercent and 
+            math.abs(open - low) < (high - low) * marubozuWickMaxPercent and 
+            math.abs(close - open) >= (high - low) * marubozuBodyMinPercent and 
+            close > open
+        pattern := "Marubozu Up"
+        isUp := true
+    else if math.abs(high - open) < (high - low) * marubozuWickMaxPercent and 
+            math.abs(close - low) < (high - low) * marubozuWickMaxPercent and 
+            math.abs(close - open) >= (high - low) * marubozuBodyMinPercent and 
+            close < open
+        pattern := "Marubozu Down"
+        isUp := false
+    else
+        pattern := ""
+        isUp := false
+    
+    [pattern, isUp]
+
 calculateSqueeze() =>
     local_basis = ta.sma(close, bbLength)
     local_dev = bbMult * ta.stdev(close, bbLength)
@@ -844,18 +920,6 @@ float volumeRatio = volume / avgVolume
 bool sufficientVolume = volumeRatio > volumeThreshold
 bool inRange = ta.stdev(close, bbLength) < bbWidthThreshold * atrAverage
 
-doji = math.abs(close - open) <= (high - low) * 0.05
-bullishEngulfing = close > open and close[1] < open[1] and close > open[1] and open < close[1]
-bearishEngulfing = close < open and close[1] > open[1] and close < open[1] and open > close[1]
-pinBar = math.abs(close - open) <= (high - low) * pinBarBodyMaxPercent and ((high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent or (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent)
-hammer = pinBar and close > open and (math.min(close, open) - low) >= (high - low) * pinBarWickMinPercent
-invertedHammer = pinBar and close > open and (high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent
-pinBarBullish = pinBar and close > open and not hammer and not invertedHammer
-shootingStar = pinBar and close < open and (high - math.max(close, open)) >= (high - low) * pinBarWickMinPercent
-pinBarBearish = pinBar and close < open and not shootingStar
-marubozuUp = math.abs(high - close) < (high - low) * marubozuWickMaxPercent and math.abs(open - low) < (high - low) * marubozuWickMaxPercent and math.abs(close - open) >= (high - low) * marubozuBodyMinPercent and close > open
-marubozuDown = math.abs(high - open) < (high - low) * marubozuWickMaxPercent and math.abs(close - low) < (high - low) * marubozuWickMaxPercent and math.abs(close - open) >= (high - low) * marubozuBodyMinPercent and close < open
-
 float tolerance = na
 supportLevel = array.size(supportLevels) > 0 ? array.get(supportLevels, array.size(supportLevels) - 1) : na
 resistanceLevel = array.size(resistanceLevels) > 0 ? array.get(resistanceLevels, array.size(resistanceLevels) - 1) : na
@@ -865,39 +929,7 @@ else
     tolerance := close * (proximity / 100)
 
 if useCandlePatternsInConditions or showCandlePatterns
-    if doji
-        candlePattern := "Doji (Neutre)"
-        candleIsUp := true
-    else if bullishEngulfing
-        candlePattern := "Bullish Engulfing"
-        candleIsUp := true
-    else if bearishEngulfing
-        candlePattern := "Bearish Engulfing"
-        candleIsUp := false
-    else if hammer and close[1] < close[2] and not na(supportLevel) and close >= supportLevel - tolerance
-        candlePattern := "Hammer"
-        candleIsUp := true
-    else if invertedHammer and close[1] < close[2] and not na(supportLevel) and close >= supportLevel - tolerance
-        candlePattern := "Inverted Hammer"
-        candleIsUp := true
-    else if pinBarBullish and close[1] < close[2] and not na(supportLevel) and close >= supportLevel - tolerance
-        candlePattern := "Pin Bar Bullish"
-        candleIsUp := true
-    else if shootingStar and close[1] > close[2] and not na(resistanceLevel) and close <= resistanceLevel + tolerance
-        candlePattern := "Shooting Star"
-        candleIsUp := false
-    else if pinBarBearish and close[1] > close[2] and not na(resistanceLevel) and close <= resistanceLevel + tolerance
-        candlePattern := "Pin Bar Bearish"
-        candleIsUp := false
-    else if marubozuUp
-        candlePattern := "Marubozu Up"
-        candleIsUp := true
-    else if marubozuDown
-        candlePattern := "Marubozu Down"
-        candleIsUp := false
-    else
-        candlePattern := ""
-        candleIsUp := false
+    [candlePattern, candleIsUp] = detectCandlePattern()
 else
     candlePattern := ""
     candleIsUp := false

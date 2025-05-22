@@ -307,8 +307,8 @@ maxFVGDisplay = input.int(5, "Nombre de FVG à prendre en compte", minval=5, max
 fvgAutoThreshold = input.bool(false, "Seuil automatique pour la détection", group="-- Fair Value Gaps", tooltip="Active un seuil dynamique pour détecter les FVG (basé sur la variation de prix).")
 fvgMinGapSize = input.float(0.015, "Taille minimale de l'écart (si seuil manuel)", minval=0.015, maxval=0.5, step=0.05, group="-- Fair Value Gaps", tooltip="Taille minimale des écarts FVG (si seuil manuel activé).")
 fvgVolumeThreshold = input.float(0.5, "Seuil de volume pour confirmer un FVG", minval=0.5, maxval=3.0, step=0.1, group="-- Fair Value Gaps", tooltip="Seuil de volume pour valider un FVG (multiple du volume moyen).")
-fvgDetectConsecutive = input.bool(true, "Détecter les imbalances consécutives", group="-- Fair Value Gaps", tooltip="Active la détection des imbalances entre bougies adjacentes.")
-fvgDetectLiquidity = input.bool(true, "Détecter les imbalances de liquidité", group="-- Fair Value Gaps", tooltip="Active la détection des imbalances liées à des balayages de liquidité.")
+fvgDetectConsecutive = input.bool(false, "Détecter les imbalances consécutives", group="-- Fair Value Gaps", tooltip="Active la détection des imbalances entre bougies adjacentes.")
+fvgDetectLiquidity = input.bool(false, "Détecter les imbalances de liquidité", group="-- Fair Value Gaps", tooltip="Active la détection des imbalances liées à des balayages de liquidité.")
 
 // Retracements de Fibonacci
 useFibonacci = input.bool(false, "Utiliser Fibonacci dans les conditions", group="-- Fibonacci Retracement", tooltip="Utilise les retracements Fibonacci pour générer des signaux et contribuer au score de tendance.")
@@ -2037,12 +2037,12 @@ type TradeDisplayData
     float pnl    // Gain/Perte
     string status  // "En cours", "Touché", "Neutralisé", "Clôturé"
 
-// CORRECTION: Trade Summary Table
+// CORRECTION COMPLÈTE: Trade Summary Table
 var table tradeSummaryTable = na
 var int lastActiveTradeCount = 0
 var int lastClosedTradeCount = 0
 var bool stateChanged = false
-var float cumulativePnLForPosition = 0.0  // Track PnL for the current position
+var float cumulativePnLForPosition = 0.0
 
 if bar_index > 0
     // Calculate current trade state
@@ -2065,30 +2065,24 @@ if bar_index > 0
         if not na(tradeSummaryTable)
             table.delete(tradeSummaryTable)
 
-        bool hasActiveTrades = false
-        if array.size(tradesArray) > 0
-            for i = 0 to array.size(tradesArray) - 1
-                Trade trade = array.get(tradesArray, i)
-                if trade.active
-                    hasActiveTrades := true
-                    break
-
+        bool hasActiveTrades = array.size(tradesArray) > 0
+        
         // Display table if there are active or closed trades
-        if array.size(tradesArray) > 0 or array.size(closedTradesArray) > 0
-            Trade[] displayTrades = array.size(tradesArray) > 0 ? tradesArray : closedTradesArray
+        if hasActiveTrades or array.size(closedTradesArray) > 0
+            Trade[] displayTrades = hasActiveTrades ? tradesArray : closedTradesArray
+            
             if array.size(displayTrades) == 0
                 tradeSummaryTable := na
             else
-                // Initialize trade data
+                // Initialize trade data from FIRST trade only
                 Trade firstTrade = array.get(displayTrades, 0)
                 bool isLong = firstTrade.is_long
                 float entryPrice = firstTrade.entry_price
                 float lotSize = firstTrade.lot_size
-                float displayedCapital = inputCapital + cumulativePnLForPosition
-
-                // Ensure lot size calculation is correct (same for all trades)
+                
+                // Ensure lot size calculation is correct
                 if na(lotSize) or lotSize <= 0
-                    float capitalToUse = isFirstTrade ? inputCapital : displayedCapital
+                    float capitalToUse = isFirstTrade ? inputCapital : (inputCapital + cumulativePnLForPosition)
                     float riskPercent = risque_par_trade / 100
                     float totalRiskAmount = capitalToUse * riskPercent
                     lotSize := totalRiskAmount / (trade_pips * valeur_pips)
@@ -2098,103 +2092,112 @@ if bar_index > 0
 
                 // Initialize arrays for TP and SL data
                 float[] tpLevels = array.new_float(numtrade, na)
-                float[] slLevels = array.new_float(numtrade, entryPrice + (isLong ? -trade_pips : trade_pips) * valeur_pips)
+                float[] slLevels = array.new_float(numtrade, na)
                 string[] tpStatuses = array.new_string(numtrade, "En cours")
                 string[] slStatuses = array.new_string(numtrade, "En cours")
                 float[] tpPips = array.new_float(numtrade, na)
-                float[] slPips = array.new_float(numtrade, trade_pips)
+                float[] slPips = array.new_float(numtrade, na)
                 float[] tpPnLs = array.new_float(numtrade, 0.0)
                 float[] slPnLs = array.new_float(numtrade, 0.0)
 
-                // Set initial TP levels
+                // Set theoretical TP and SL levels based on numtrade
                 for i = 0 to numtrade - 1
                     float multiplier = i == 0 ? 1.0 : i == 1 ? 2.0 : 3.0
                     float tpDistance = trade_pips * multiplier * valeur_pips
+                    float slDistance = trade_pips * valeur_pips
+                    
                     array.set(tpLevels, i, entryPrice + (isLong ? tpDistance : -tpDistance))
+                    array.set(slLevels, i, entryPrice + (isLong ? -slDistance : slDistance))
                     array.set(tpPips, i, trade_pips * multiplier)
+                    array.set(slPips, i, trade_pips)
                     array.set(tpPnLs, i, tpDistance * lotSize)
-                    array.set(slPnLs, i, -trade_pips * valeur_pips * lotSize)
+                    array.set(slPnLs, i, -slDistance * lotSize)
 
-                // Check trade events with more precise logic
-                bool slHitBeforeTP = false
-                bool anyTpHit = false
+                // CORRECTION MULTI-TRADES: Analyser TOUS les trades (actifs + fermés)
+                bool hasAnySlHit = false
+                float totalRealPips = 0.0
+                float totalRealPnL = 0.0
+                float lastRealExitLevel = na
+                int realSlCount = 0
+                int realTpCount = 0
                 
-                // Check individual TP hits
-                bool[] tpHitArray = array.new_bool(numtrade, false)
-                if numtrade >= 1 and array.size(displayTrades) >= 1
-                    array.set(tpHitArray, 0, array.get(displayTrades, 0).tp1_hit)
-                if numtrade >= 2 and array.size(displayTrades) >= 2
-                    array.set(tpHitArray, 1, array.get(displayTrades, 1).tp2_hit)
-                if numtrade >= 3 and array.size(displayTrades) >= 3
-                    array.set(tpHitArray, 2, array.get(displayTrades, 2).tp3_hit)
-
-                if not hasActiveTrades and array.size(closedTradesArray) > 0
-                    // Check if SL was hit before any TP
-                    for i = 0 to array.size(closedTradesArray) - 1
-                        Trade trade = array.get(closedTradesArray, i)
-                        if not trade.tp1_hit and not trade.tp2_hit and not trade.tp3_hit
-                            slHitBeforeTP := true
-                            break
+                if hasActiveTrades
+                    // Pour les trades actifs, analyser chaque trade individuellement
+                    for i = 0 to math.min(array.size(displayTrades), numtrade) - 1
+                        Trade activeTrade = array.get(displayTrades, i)
                         
-                        // Check if any TP was hit
-                        if trade.tp1_hit or trade.tp2_hit or trade.tp3_hit
-                            anyTpHit := true
-
-                // Adjust levels and statuses based on events with proper logic for each trade
-                if slHitBeforeTP
-                    for i = 0 to numtrade - 1
-                        array.set(tpStatuses, i, "Non atteint")
-                        array.set(slStatuses, i, "Touché")
-                else if hasActiveTrades
-                    // For active trades with multi-TP strategy
-                    if numtrade >= 1 and array.size(displayTrades) >= 1 and array.get(displayTrades, 0).tp1_hit
-                        array.set(tpStatuses, 0, "Touché")
-                        array.set(slStatuses, 0, "Non atteint")
-                        
-                        // Move remaining trades SL to breakeven
-                        if numtrade >= 2
-                            array.set(slLevels, 1, entryPrice)
-                            array.set(slPips, 1, 0.0)
-                            array.set(slPnLs, 1, 0.0)
-                            array.set(slStatuses, 1, "Neutralisé")
-                        
-                        if numtrade >= 3
-                            array.set(slLevels, 2, entryPrice)
-                            array.set(slPips, 2, 0.0)
-                            array.set(slPnLs, 2, 0.0)
-                            array.set(slStatuses, 2, "Neutralisé")
+                        // Vérifier les TP touchés pour ce trade
+                        if i == 0 and activeTrade.tp1_hit
+                            array.set(tpStatuses, 0, "Touché")
+                            array.set(slStatuses, 0, "Non atteint")
+                            // Déplacer les SL restants au breakeven
+                            for j = 1 to numtrade - 1
+                                array.set(slLevels, j, entryPrice)
+                                array.set(slPips, j, 0.0)
+                                array.set(slPnLs, j, 0.0)
+                                array.set(slStatuses, j, "Neutralisé")
+                        else if i == 1 and activeTrade.tp2_hit
+                            array.set(tpStatuses, 1, "Touché")
+                            array.set(slStatuses, 1, "Non atteint")
+                            // Déplacer SL3 au niveau TP1
+                            if numtrade >= 3
+                                array.set(slLevels, 2, array.get(tpLevels, 0))
+                                array.set(slPips, 2, trade_pips)
+                                array.set(slPnLs, 2, array.get(tpPnLs, 0))
+                                array.set(slStatuses, 2, "Neutralisé")
+                        else if i == 2 and activeTrade.tp3_hit
+                            array.set(tpStatuses, 2, "Touché")
+                            array.set(slStatuses, 2, "Non atteint")
                             
-                    if numtrade >= 2 and array.size(displayTrades) >= 2 and array.get(displayTrades, 1).tp2_hit
-                        array.set(tpStatuses, 1, "Touché")
-                        array.set(slStatuses, 1, "Non atteint")
+                else if array.size(closedTradesArray) > 0
+                    // Pour les trades fermés, analyser TOUS les trades fermés
+                    for i = 0 to math.min(array.size(closedTradesArray), numtrade) - 1
+                        Trade closedTrade = array.get(closedTradesArray, i)
                         
-                        // Move TP3 SL to TP1 level
-                        if numtrade == 3 and array.size(displayTrades) >= 3
-                            float tp1Level = array.get(tpLevels, 0)
-                            array.set(slLevels, 2, tp1Level)
-                            array.set(slPips, 2, math.abs(tp1Level - entryPrice) / valeur_pips)
-                            array.set(slPnLs, 2, (isLong ? 1 : -1) * array.get(slPips, 2) * lotSize * valeur_pips)
-                            array.set(slStatuses, 2, "Neutralisé")
-                            
-                    if numtrade == 3 and array.size(displayTrades) >= 3 and array.get(displayTrades, 2).tp3_hit
-                        array.set(tpStatuses, 2, "Touché")
-                        array.set(slStatuses, 2, "Non atteint")
-                        
-                else if not hasActiveTrades and anyTpHit
-                    // For closed trades with TPs hit
-                    for i = 0 to numtrade - 1
-                        if i < array.size(tpHitArray) and array.get(tpHitArray, i)
-                            array.set(tpStatuses, i, "Touché")
-                            array.set(slStatuses, i, "Non atteint")
+                        // Vérifier quel niveau a été touché pour ce trade spécifique
+                        if closedTrade.tp3_hit and i == 2
+                            array.set(tpStatuses, 2, "Touché")
+                            array.set(slStatuses, 2, "Non atteint")
+                            totalRealPips += trade_pips * 3
+                            totalRealPnL += array.get(tpPnLs, 2)
+                            lastRealExitLevel := closedTrade.tp3
+                            realTpCount += 1
+                        else if closedTrade.tp2_hit and i == 1
+                            array.set(tpStatuses, 1, "Touché")
+                            array.set(slStatuses, 1, "Non atteint")
+                            totalRealPips += trade_pips * 2
+                            totalRealPnL += array.get(tpPnLs, 1)
+                            lastRealExitLevel := closedTrade.tp2
+                            realTpCount += 1
+                        else if closedTrade.tp1_hit and i == 0
+                            array.set(tpStatuses, 0, "Touché")
+                            array.set(slStatuses, 0, "Non atteint")
+                            totalRealPips += trade_pips
+                            totalRealPnL += array.get(tpPnLs, 0)
+                            lastRealExitLevel := closedTrade.tp1
+                            realTpCount += 1
                         else
+                            // SL touché pour ce trade
+                            array.set(slStatuses, i, "Touché")
                             array.set(tpStatuses, i, "Non atteint")
+                            totalRealPips += trade_pips  // Sera rendu négatif plus tard
+                            totalRealPnL += array.get(slPnLs, i)
+                            // CORRECTION: Prendre le niveau SL réel du trade, pas une valeur calculée
+                            lastRealExitLevel := closedTrade.sl
+                            hasAnySlHit := true
+                            realSlCount += 1
+                            
+                    // Gestion des statuts pour les niveaux non touchés
+                    for i = 0 to numtrade - 1
+                        if array.get(tpStatuses, i) != "Touché"
+                            array.set(tpStatuses, i, "Non atteint")
+                        if array.get(slStatuses, i) != "Touché" and array.get(slStatuses, i) != "Neutralisé"
                             array.set(slStatuses, i, "Non atteint")
 
                 // Populate TradeDisplayData arrays
                 TradeDisplayData[] tpData = array.new<TradeDisplayData>(numtrade, na)
                 TradeDisplayData[] slData = array.new<TradeDisplayData>(numtrade, na)
                 
-                // Create TradeDisplayData objects with correct values (all on single lines)
                 for i = 0 to numtrade - 1
                     float tpLevel = array.get(tpLevels, i)
                     float slLevel = array.get(slLevels, i)
@@ -2205,83 +2208,73 @@ if bar_index > 0
                     float tpPnLVal = array.get(tpPnLs, i)
                     float slPnLVal = array.get(slPnLs, i)
                     
-                    // Consistent treatment for neutralized SL regardless of trade number (all on single line)
                     TradeDisplayData tpEntry = TradeDisplayData.new("TP", i + 1, tpPip, tpLevel, risque_par_trade, lotSize, tpPnLVal, tpStatus)
-                    TradeDisplayData slEntry = slStatus == "Neutralisé" ? TradeDisplayData.new("SL", i + 1, na, slLevel, na, na, na, slStatus) : TradeDisplayData.new("SL", i + 1, slPip, slLevel, risque_par_trade, lotSize, slPnLVal, slStatus)
+                    TradeDisplayData slEntry = TradeDisplayData.new("SL", i + 1, slPip, slLevel, risque_par_trade, lotSize, slPnLVal, slStatus)
                     
                     array.set(tpData, i, tpEntry)
                     array.set(slData, i, slEntry)
 
-                // Calculate totals with better accuracy
+                // CORRECTION TOTAUX: Gérer tous les scénarios multi-trades
                 string totalPipsDisplay = "En cours"
-                string totalLevelDisplay = "En cours"
+                string totalLevelDisplay = "En cours" 
                 string totalRiskDisplay = "En cours"
                 string totalLotDisplay = "En cours"
                 string totalPnLDisplay = "En cours"
-                float totalPips = 0.0
-                float totalPnL = 0.0
-                float totalLot = 0.0
-                int slCount = 0
-                int tpCount = 0
-                float lastExitLevel = na
 
-                if not hasActiveTrades and array.size(closedTradesArray) > 0
-                    slCount := 0
-                    tpCount := 0
+                if hasActiveTrades
+                    // Pour les trades actifs, calculer les totaux des TP déjà touchés
+                    float activeTotalPips = 0.0
+                    float activeTotalPnL = 0.0
+                    int activeTpHits = 0
                     
-                    // Count TP and SL hits accurately
-                    for i = 0 to array.size(closedTradesArray) - 1
-                        Trade trade = array.get(closedTradesArray, i)
-                        if not trade.tp1_hit and not trade.tp2_hit and not trade.tp3_hit
-                            slHitBeforeTP := true
-                            slCount := slCount + 1
-                        else
-                            if i == 0 and trade.tp1_hit
-                                tpCount := tpCount + 1
-                                totalPips := trade_pips
-                            else if i == 1 and trade.tp2_hit
-                                tpCount := tpCount + 1
-                                totalPips := totalPips + trade_pips * 2
-                            else if i == 2 and trade.tp3_hit
-                                tpCount := tpCount + 1
-                                totalPips := totalPips + trade_pips * 3
-                                
-                        // Get the last exit level
-                        if i == array.size(closedTradesArray) - 1
-                            if trade.tp3_hit
-                                lastExitLevel := trade.tp3
-                            else if trade.tp2_hit
-                                lastExitLevel := trade.tp2
-                            else if trade.tp1_hit
-                                lastExitLevel := trade.tp1
-                            else
-                                lastExitLevel := trade.sl
-
-                    // Calculate total PnL based on actual exit levels
-                    if slHitBeforeTP
-                        totalPips := -trade_pips
-                        totalPips := isLong ? totalPips : -totalPips
-                        totalPnL := slCount * array.get(slPnLs, 0)  // All SL hits have the same PnL
+                    for i = 0 to math.min(array.size(displayTrades), numtrade) - 1
+                        Trade activeTrade = array.get(displayTrades, i)
+                        if (i == 0 and activeTrade.tp1_hit) or (i == 1 and activeTrade.tp2_hit) or (i == 2 and activeTrade.tp3_hit)
+                            float multiplier = i == 0 ? 1.0 : i == 1 ? 2.0 : 3.0
+                            activeTotalPips += trade_pips * multiplier
+                            activeTotalPnL += array.get(tpPnLs, i)
+                            activeTpHits += 1
+                    
+                    if activeTpHits > 0
+                        string pipsSign = activeTotalPips >= 0 ? "+" : ""
+                        totalPipsDisplay := pipsSign + str.tostring(math.round(activeTotalPips), "#") + " pips (partiel)"
+                        totalLevelDisplay := "Position active"
+                        totalRiskDisplay := "R+" + str.tostring(activeTpHits) + " (partiel)"
+                        totalLotDisplay := str.tostring(lotSize * activeTpHits, "#.##")
+                        totalPnLDisplay := str.tostring(activeTotalPnL, "#.##") + " $ (partiel)"
+                        
+                else if not na(lastRealExitLevel)
+                    // Pour les trades fermés, utiliser les totaux calculés
+                    float signedPips = 0.0
+                    if hasAnySlHit
+                        // Au moins un SL touché = perte
+                        signedPips := -totalRealPips
                     else
-                        totalPips := isLong ? totalPips : -totalPips
-                        // Sum up all actual TP hits
-                        for i = 0 to numtrade - 1
-                            if i < array.size(tpHitArray) and array.get(tpHitArray, i)
-                                totalPnL := totalPnL + array.get(tpPnLs, i)
-
-                    string sign = totalPips >= 0 ? "+" : "-"
-                    totalPipsDisplay := sign + str.tostring(math.round(math.abs(totalPips)), "#") + " pips"
-                    totalLevelDisplay := not na(lastExitLevel) ? str.tostring(lastExitLevel, "#.##") + " $" : "-"
-                    totalRiskDisplay := slHitBeforeTP ? "R-" + str.tostring(slCount) : "R+" + str.tostring(tpCount)
+                        // Que des TP touchés = gain
+                        signedPips := totalRealPips
                     
-                    // Calculate total lot size based on actual trades
-                    totalLot := slHitBeforeTP ? lotSize * slCount : lotSize * tpCount
-                    totalLotDisplay := str.tostring(totalLot, "#.##")
-                    totalPnLDisplay := str.tostring(totalPnL, "#.##") + " $"
+                    string pipsSign = signedPips >= 0 ? "+" : ""
+                    totalPipsDisplay := pipsSign + str.tostring(math.round(signedPips), "#") + " pips"
+                    
+                    // Niveau de sortie : soit SL commun, soit dernier TP
+                    totalLevelDisplay := str.tostring(lastRealExitLevel, "#.##") + " $"
+                    
+                    // CORRECTION ÉCHELLE: Comptage selon la logique "barreaux fixes"
+                    if hasAnySlHit
+                        totalRiskDisplay := "R-1"  // Toujours R-1 car SL = 1 seul niveau de risque
+                    else
+                        totalRiskDisplay := "R+" + str.tostring(realTpCount)
+                    
+                    // Lot total basé sur les trades fermés
+                    totalLotDisplay := str.tostring(lotSize * (realSlCount + realTpCount), "#.##")
+                    
+                    // PnL total cumulé
+                    totalPnLDisplay := str.tostring(totalRealPnL, "#.##") + " $"
 
                     // Update cumulativePnLForPosition
-                    cumulativePnLForPosition := totalPnL
-                    displayedCapital := inputCapital + cumulativePnLForPosition
+                    cumulativePnLForPosition := totalRealPnL
+
+                float displayedCapital = inputCapital + cumulativePnLForPosition
 
                 // Create the table
                 int numColumns = 2 + numtrade + numtrade
@@ -2298,14 +2291,14 @@ if bar_index > 0
                 table.cell(tradeSummaryTable, 0, 1, "Pips", bgcolor=color.new(color.white, 20), text_color=color.black, text_size=size.normal)
                 for i = 0 to numtrade - 1
                     TradeDisplayData tpEntry = array.get(tpData, i)
-                    TradeDisplayData slEntry = array.get(slData, -i)
+                    TradeDisplayData slEntry = array.get(slData, i)
                     
-                    // Better conditional display logic (all on single lines)
-                    string tpPipsDisplay = hasActiveTrades ? (na(tpEntry.pips) ? "-" : str.tostring(math.round(tpEntry.pips), "#") + " pips") : (tpEntry.status == "Touché" ? str.tostring(math.round(tpEntry.pips), "#") + " pips" : "-")
-                    string slPipsDisplay = hasActiveTrades ? (slEntry.status == "Neutralisé" ? "0 pips" : na(slEntry.pips) ? "-" : str.tostring(math.round(slEntry.pips), "#") + " pips") : (slEntry.status == "Touché" ? str.tostring(math.round(slEntry.pips), "#") + " pips" : "-")
+                    string tpPipsDisplay = tpEntry.status == "Touché" ? str.tostring(math.round(tpEntry.pips), "#") + " pips" : (tpEntry.status == "En cours" ? str.tostring(math.round(tpEntry.pips), "#") + " pips" : "-")
+                    string slPipsDisplay = slEntry.status == "Touché" ? str.tostring(math.round(slEntry.pips), "#") + " pips" : (slEntry.status == "En cours" ? str.tostring(math.round(slEntry.pips), "#") + " pips" : (slEntry.status == "Neutralisé" ? "0 pips" : "-"))
                     
                     table.cell(tradeSummaryTable, i + 1, 1, tpPipsDisplay, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
                     table.cell(tradeSummaryTable, i + 1 + numtrade, 1, slPipsDisplay, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                
                 table.cell(tradeSummaryTable, numColumns - 1, 1, totalPipsDisplay, bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
 
                 // Row "Niveaux"
@@ -2314,12 +2307,12 @@ if bar_index > 0
                     TradeDisplayData tpEntry = array.get(tpData, i)
                     TradeDisplayData slEntry = array.get(slData, i)
                     
-                    // Show levels for both active and closed trades when appropriate
-                    string tpLevelDisplay = na(tpEntry.level) ? "-" : str.tostring(tpEntry.level, "#.##") + " $"
-                    string slLevelDisplay = na(slEntry.level) ? "-" : str.tostring(slEntry.level, "#.##") + " $"
+                    string tpLevelDisplay = tpEntry.status == "Non atteint" ? "-" : str.tostring(tpEntry.level, "#.##") + " $"
+                    string slLevelDisplay = slEntry.status == "Non atteint" ? "-" : str.tostring(slEntry.level, "#.##") + " $"
                     
                     table.cell(tradeSummaryTable, i + 1, 2, tpLevelDisplay, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
                     table.cell(tradeSummaryTable, i + 1 + numtrade, 2, slLevelDisplay, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                
                 table.cell(tradeSummaryTable, numColumns - 1, 2, totalLevelDisplay, bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
 
                 // Row "Risque"
@@ -2328,12 +2321,12 @@ if bar_index > 0
                     TradeDisplayData tpEntry = array.get(tpData, i)
                     TradeDisplayData slEntry = array.get(slData, i)
                     
-                    // Show appropriate risk values (all on single lines)
-                    string tpRiskDisplay = hasActiveTrades ? str.tostring(risque_par_trade, "#.##") + "%" : (tpEntry.status == "Touché" ? str.tostring(risque_par_trade, "#.##") + "%" : "-")
-                    string slRiskDisplay = hasActiveTrades ? (slEntry.status == "Neutralisé" ? "0%" : str.tostring(risque_par_trade, "#.##") + "%") : (slEntry.status == "Touché" ? str.tostring(risque_par_trade, "#.##") + "%" : "-")
+                    string tpRiskDisplay = tpEntry.status == "Non atteint" ? "-" : str.tostring(risque_par_trade, "#.##") + "%"
+                    string slRiskDisplay = slEntry.status == "Non atteint" ? "-" : (slEntry.status == "Neutralisé" ? "0%" : str.tostring(risque_par_trade, "#.##") + "%")
                     
                     table.cell(tradeSummaryTable, i + 1, 3, tpRiskDisplay, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
                     table.cell(tradeSummaryTable, i + 1 + numtrade, 3, slRiskDisplay, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                
                 table.cell(tradeSummaryTable, numColumns - 1, 3, totalRiskDisplay, bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
 
                 // Row "Lot"
@@ -2342,12 +2335,12 @@ if bar_index > 0
                     TradeDisplayData tpEntry = array.get(tpData, i)
                     TradeDisplayData slEntry = array.get(slData, i)
                     
-                    // Show lot size for appropriate trades (all on single lines)
-                    string tpLotDisplay = hasActiveTrades ? str.tostring(lotSize, "#.##") : (tpEntry.status == "Touché" ? str.tostring(lotSize, "#.##") : "-")
-                    string slLotDisplay = hasActiveTrades ? (slEntry.status == "Neutralisé" ? "-" : str.tostring(lotSize, "#.##")) : (slEntry.status == "Touché" ? str.tostring(lotSize, "#.##") : "-")
+                    string tpLotDisplay = tpEntry.status == "Non atteint" ? "-" : str.tostring(lotSize, "#.##")
+                    string slLotDisplay = slEntry.status == "Non atteint" ? "-" : (slEntry.status == "Neutralisé" ? "-" : str.tostring(lotSize, "#.##"))
                     
                     table.cell(tradeSummaryTable, i + 1, 4, tpLotDisplay, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
                     table.cell(tradeSummaryTable, i + 1 + numtrade, 4, slLotDisplay, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                
                 table.cell(tradeSummaryTable, numColumns - 1, 4, totalLotDisplay, bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
 
                 // Row "Gain/Perte"
@@ -2356,12 +2349,12 @@ if bar_index > 0
                     TradeDisplayData tpEntry = array.get(tpData, i)
                     TradeDisplayData slEntry = array.get(slData, i)
                     
-                    // Show P&L for appropriate trades (all on single lines)
-                    string tpPnLDisplay = hasActiveTrades ? str.tostring(tpEntry.pnl, "#.##") + " $" : (tpEntry.status == "Touché" ? str.tostring(tpEntry.pnl, "#.##") + " $" : "-")
-                    string slPnLDisplay = hasActiveTrades ? (slEntry.status == "Neutralisé" ? "0 $" : na(slEntry.pnl) ? "-" : str.tostring(slEntry.pnl, "#.##") + " $") : (slEntry.status == "Touché" ? str.tostring(slEntry.pnl, "#.##") + " $" : "-")
+                    string tpPnLDisplay = tpEntry.status == "Non atteint" ? "-" : str.tostring(tpEntry.pnl, "#.##") + " $"
+                    string slPnLDisplay = slEntry.status == "Non atteint" ? "-" : (slEntry.status == "Neutralisé" ? "0 $" : str.tostring(slEntry.pnl, "#.##") + " $")
                     
                     table.cell(tradeSummaryTable, i + 1, 5, tpPnLDisplay, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
                     table.cell(tradeSummaryTable, i + 1 + numtrade, 5, slPnLDisplay, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                
                 table.cell(tradeSummaryTable, numColumns - 1, 5, totalPnLDisplay, bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
 
                 // Row "Statut"
@@ -2370,12 +2363,9 @@ if bar_index > 0
                     TradeDisplayData tpEntry = array.get(tpData, i)
                     TradeDisplayData slEntry = array.get(slData, i)
                     
-                    // Individual status display for each trade
-                    string finalTpStatus = tpEntry.status
-                    string finalSlStatus = slEntry.status
-                    
-                    table.cell(tradeSummaryTable, i + 1, 6, finalTpStatus, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
-                    table.cell(tradeSummaryTable, i + 1 + numtrade, 6, finalSlStatus, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                    table.cell(tradeSummaryTable, i + 1, 6, tpEntry.status, bgcolor=color.new(color.green, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                    table.cell(tradeSummaryTable, i + 1 + numtrade, 6, slEntry.status, bgcolor=color.new(color.red, 30 + i * 20), text_color=color.white, text_size=size.normal)
+                
                 table.cell(tradeSummaryTable, numColumns - 1, 6, "-", bgcolor=color.new(color.yellow, 20), text_color=color.black, text_size=size.normal)
 
 float obvPlotValue = showOBV and array.size(tradesArray) == 0 ? obvNormalized : na

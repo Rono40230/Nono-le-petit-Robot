@@ -2110,8 +2110,10 @@ if bar_index > 0
                     array.set(slLevels, i, entryPrice + (isLong ? -slDistance : slDistance))
                     array.set(tpPips, i, trade_pips * tpMultiplier)
                     array.set(slPips, i, trade_pips)
-                    array.set(tpPnLs, i, tpDistance * lotSize)
-                    array.set(slPnLs, i, -slDistance * lotSize)
+                    float displayedCapital = isFirstTrade ? inputCapital : (inputCapital + cumulativePnLForPosition)
+                    float riskAmount = displayedCapital * (risque_par_trade / 100)
+                    array.set(tpPnLs, i, riskAmount * tpMultiplier)
+                    array.set(slPnLs, i, -riskAmount)
 
                 // ANALYSE CONFORME À LA LISTE: Déterminer l'état exact de la position
                 bool tp1Hit = false
